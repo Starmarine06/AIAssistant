@@ -1,7 +1,42 @@
-/.env
-/AIAssistant_Setup.exe
-/bot.exe
-/build_release.py
-/credentials.json
-/token.json
-/__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Local environment files
+.env
+
+# Credentials and tokens (do NOT commit)
+credentials.json
+credentials.local.json
+credentials.example.json
+token.json
+config.json
+
+# Build artifacts and distributions
+dist/
+build/
+*.spec
+*.exe
+bot.exe
+AIAssistant_Setup.exe
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+
+# Logs and runtime files
+*.log
+reminders.json
+contacts.json
+
+# Packaging
+pip-wheel-metadata/
+*.egg-info/
