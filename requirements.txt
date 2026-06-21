@@ -1,0 +1,13 @@
+requests
+pyautogui
+python-telegram-bot
+google-api-python-client
+google-auth
+google-auth-oauthlib
+python-dotenv
+customtkinter
+Pillow
+pystray
+
+# Dev / build tools (optional)
+pyinstaller

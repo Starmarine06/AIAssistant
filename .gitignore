@@ -1,0 +1,7 @@
+/.env
+/AIAssistant_Setup.exe
+/bot.exe
+/build_release.py
+/credentials.json
+/token.json
+/__pycache__
