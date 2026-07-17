@@ -2217,6 +2217,21 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Failed to download: {e}")
 
 # ─── MAIN ──────────────────────────────────────────────
+def wait_for_internet():
+    import socket
+    logging.info("Checking internet connection...")
+    logged_waiting = False
+    while True:
+        try:
+            with socket.create_connection(("oauth2.googleapis.com", 443), timeout=3):
+                logging.info("Internet connection detected. Continuing bot startup...")
+                return
+        except Exception:
+            if not logged_waiting:
+                logging.info("Offline. Waiting for internet connection to restore...")
+                logged_waiting = True
+            time.sleep(5)
+
 def stop_bot():
     logging.info("Stopping bot...")
     os._exit(0)
@@ -2241,6 +2256,7 @@ if __name__ == "__main__":
         logging.error("Configuration missing. Exiting.")
         sys.exit(1)
         
+    wait_for_internet()
     init_calendar()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
