@@ -26,6 +26,8 @@ build/
 *.exe
 bot.exe
 AIAssistant_Setup.exe
+app_icon.ico
+*.ico
 
 # Editor and OS files
 .vscode/
