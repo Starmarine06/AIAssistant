@@ -12,29 +12,51 @@ import customtkinter as ctk
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-def create_shortcut(target_path, shortcut_path):
-    """Create a Windows shortcut using PowerShell to avoid dependency issues."""
-    try:
-        powershell_cmd = (
-            f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{shortcut_path}'); "
-            f"$s.TargetPath = '{target_path}'; "
-            f"$s.WorkingDirectory = '{os.path.dirname(target_path)}'; "
-            f"$s.Save()"
-        )
-        subprocess.run(["powershell", "-Command", powershell_cmd], shell=True, capture_output=True)
-        return True
-    except Exception as e:
-        print(f"Error creating shortcut: {e}")
-        return False
+def create_shortcut(target_path, shortcut_path, name="AI Assistant"):
+    """Create a Windows or Linux shortcut depending on the operating system."""
+    if sys.platform == 'win32':
+        try:
+            powershell_cmd = (
+                f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{shortcut_path}'); "
+                f"$s.TargetPath = '{target_path}'; "
+                f"$s.WorkingDirectory = '{os.path.dirname(target_path)}'; "
+                f"$s.Save()"
+            )
+            subprocess.run(["powershell", "-Command", powershell_cmd], shell=True, capture_output=True)
+            return True
+        except Exception as e:
+            print(f"Error creating shortcut: {e}")
+            return False
+    else:
+        try:
+            content = f"""[Desktop Entry]
+Type=Application
+Name={name}
+Exec={target_path}
+Terminal=false
+Categories=Utility;
+"""
+            with open(shortcut_path, "w") as f:
+                f.write(content)
+            os.chmod(shortcut_path, 0o755)
+            return True
+        except Exception as e:
+            print(f"Error creating shortcut: {e}")
+            return False
 
 class InstallerGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
         
         # Paths
-        self.default_install_dir = os.path.join(
-            os.environ["USERPROFILE"], "AppData", "Local", "Programs", "AIAssistant"
-        )
+        if sys.platform == 'win32':
+            self.default_install_dir = os.path.join(
+                os.path.expanduser("~"), "AppData", "Local", "Programs", "AIAssistant"
+            )
+        else:
+            self.default_install_dir = os.path.join(
+                os.path.expanduser("~"), ".local", "share", "AIAssistant"
+            )
         self.install_dir = self.default_install_dir
         self.launch_on_startup = tk.BooleanVar(value=True)
         self.launch_now = tk.BooleanVar(value=True)
@@ -93,9 +115,10 @@ class InstallerGUI(ctk.CTk):
         desc_label.pack(pady=20)
         
         # Startup Option Checkbox
+        startup_text = "Start AI Assistant automatically when Windows boots" if sys.platform == 'win32' else "Start AI Assistant automatically when system boots"
         startup_cb = ctk.CTkCheckBox(
             self.current_frame, 
-            text="Start AI Assistant automatically when Windows boots",
+            text=startup_text,
             variable=self.launch_on_startup,
             font=ctk.CTkFont(size=12)
         )
@@ -219,9 +242,12 @@ class InstallerGUI(ctk.CTk):
  
     def run_install(self):
         try:
-            # Terminate any running bot.exe process to release the file lock
+            # Terminate any running bot process to release the file lock
             try:
-                subprocess.run(["taskkill", "/F", "/IM", "bot.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                if sys.platform == 'win32':
+                    subprocess.run(["taskkill", "/F", "/IM", "bot.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                else:
+                    subprocess.run(["pkill", "-f", "bot"], capture_output=True)
             except Exception:
                 pass
                 
@@ -230,44 +256,58 @@ class InstallerGUI(ctk.CTk):
             os.makedirs(self.install_dir, exist_ok=True)
             time.sleep(0.5)
             
-            # 2. Locate bundled bot.exe and copy it
+            # 2. Locate bundled bot and copy it
             self.update_status("Extracting application files...", 0.4)
             # If running as PyInstaller EXE, the resource is in sys._MEIPASS
             meipass = getattr(sys, '_MEIPASS', None)
             
+            exe_name = "bot.exe" if sys.platform == 'win32' else "bot"
+            
             if meipass:
-                src_exe = os.path.join(meipass, "bot.exe")
+                src_exe = os.path.join(meipass, exe_name)
             else:
                 # Developer mode fallback (look in dist/ or local workspace)
-                src_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "bot.exe")
+                src_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", exe_name)
                 if not os.path.exists(src_exe):
-                    src_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot.exe")
+                    src_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), exe_name)
                     
-            dest_exe = os.path.join(self.install_dir, "bot.exe")
+            dest_exe = os.path.join(self.install_dir, exe_name)
             
-            # Verify bot.exe source exists before copying
+            # Verify bot source exists before copying
             if os.path.exists(src_exe):
                 shutil.copy2(src_exe, dest_exe)
             else:
-                # If we're testing the installer itself without a built bot.exe, write a dummy file
+                # If we're testing the installer itself without a built bot, write a dummy file
                 with open(dest_exe, "w") as f:
-                    f.write("DUMMY BOT EXE CONTENT (For testing installer)")
+                    f.write("DUMMY BOT CONTENT (For testing installer)")
+                if sys.platform != 'win32':
+                    os.chmod(dest_exe, 0o755)
             
             self.update_status("Creating desktop shortcuts...", 0.6)
             time.sleep(0.5)
             
             # 3. Create Shortcuts
-            desktop_dir = os.path.join(os.environ["USERPROFILE"], "Desktop")
-            desktop_shortcut = os.path.join(desktop_dir, "AI Assistant.lnk")
+            desktop_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+            if sys.platform == 'win32':
+                desktop_shortcut = os.path.join(desktop_dir, "AI Assistant.lnk")
+            else:
+                desktop_shortcut = os.path.join(desktop_dir, "AIAssistant.desktop")
             create_shortcut(dest_exe, desktop_shortcut)
             
-            # Start Menu shortcut
-            self.update_status("Adding to Start Menu...", 0.7)
-            start_menu_dir = os.path.join(
-                os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs"
-            )
-            os.makedirs(start_menu_dir, exist_ok=True)
-            start_menu_shortcut = os.path.join(start_menu_dir, "AI Assistant.lnk")
+            # Start Menu / Desktop Launcher shortcut
+            self.update_status("Adding to applications launcher...", 0.7)
+            if sys.platform == 'win32':
+                start_menu_dir = os.path.join(
+                    os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs"
+                )
+                os.makedirs(start_menu_dir, exist_ok=True)
+                start_menu_shortcut = os.path.join(start_menu_dir, "AI Assistant.lnk")
+            else:
+                start_menu_dir = os.path.join(
+                    os.path.expanduser("~"), ".local", "share", "applications"
+                )
+                os.makedirs(start_menu_dir, exist_ok=True)
+                start_menu_shortcut = os.path.join(start_menu_dir, "AIAssistant.desktop")
             create_shortcut(dest_exe, start_menu_shortcut)
             
             time.sleep(0.5)
@@ -275,11 +315,18 @@ class InstallerGUI(ctk.CTk):
             # 4. Handle Launch on Startup
             if self.launch_on_startup.get():
                 self.update_status("Configuring startup settings...", 0.8)
-                startup_dir = os.path.join(
-                    os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
-                )
-                os.makedirs(startup_dir, exist_ok=True)
-                startup_shortcut = os.path.join(startup_dir, "AIAssistant.lnk")
+                if sys.platform == 'win32':
+                    startup_dir = os.path.join(
+                        os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
+                    )
+                    os.makedirs(startup_dir, exist_ok=True)
+                    startup_shortcut = os.path.join(startup_dir, "AIAssistant.lnk")
+                else:
+                    startup_dir = os.path.join(
+                        os.path.expanduser("~"), ".config", "autostart"
+                    )
+                    os.makedirs(startup_dir, exist_ok=True)
+                    startup_shortcut = os.path.join(startup_dir, "AIAssistant.desktop")
                 create_shortcut(dest_exe, startup_shortcut)
             
             self.update_status("Installation successful!", 1.0)

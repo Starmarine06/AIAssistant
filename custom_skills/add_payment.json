@@ -1,0 +1,21 @@
+{
+    "description": "Add a payment to the Google Sheets payments ledger. You must request the 'amount' and 'reason' from the user if not already provided. 'date' and 'time' will default to the current date and time if not supplied.",
+    "parameters": {
+        "amount": {
+            "type": "string",
+            "description": "The payment amount (e.g. 150, 45.50). Required."
+        },
+        "reason": {
+            "type": "string",
+            "description": "The description/reason for the payment (e.g. taxi, groceries, dinner). Required."
+        },
+        "date": {
+            "type": "string",
+            "description": "Optional. The date of the payment in YYYY-MM-DD format. Defaults to today's date if not specified."
+        },
+        "time": {
+            "type": "string",
+            "description": "Optional. The time of the payment in HH:MM format. Defaults to current time if not specified."
+        }
+    }
+}

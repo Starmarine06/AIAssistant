@@ -106,33 +106,41 @@ def build():
     icon_path = "app_icon.ico"
     generate_ico_file(icon_path)
     
-    # 2. Build bot.exe
-    print("\nPhase 1: Compiling bot.py to standalone executable...")
+    ext = ".exe" if sys.platform == "win32" else ""
+    sep = ";" if sys.platform == "win32" else ":"
+    
+    # 2. Build bot
+    print(f"\nPhase 1: Compiling bot.py to standalone executable...")
     bot_build_cmd = [
         "pyinstaller",
         "--noconsole",
         "--onefile",
         f"--icon={icon_path}",
         "--collect-all", "customtkinter",
-        "--name=bot",
+        "--add-data", f"custom_skills{sep}custom_skills",
+        f"--name=bot",
         "bot.py"
     ]
+    if os.path.exists("credentials.json"):
+        bot_build_cmd.insert(-1, "--add-data")
+        bot_build_cmd.insert(-1, f"credentials.json{sep}.")
+        
     try:
         run_command(bot_build_cmd)
-        print("Phase 1 complete: bot.exe created!")
+        print(f"Phase 1 complete: bot{ext} created!")
     except Exception as e:
-        print(f"Error building bot.exe: {e}")
+        print(f"Error building bot{ext}: {e}")
         sys.exit(1)
         
-    # Verify bot.exe exists before proceeding
-    built_bot_path = os.path.join("dist", "bot.exe")
+    # Verify bot exists before proceeding
+    built_bot_path = os.path.join("dist", f"bot{ext}")
     if not os.path.exists(built_bot_path):
-        print("Error: bot.exe was not found in the dist folder after compilation!")
+        print(f"Error: bot{ext} was not found in the dist folder after compilation!")
         sys.exit(1)
 
-    # 3. Build AIAssistant_Setup.exe
-    print("\nPhase 2: Compiling installer.py and bundling bot.exe...")
-    add_data_flag = f"{built_bot_path};."
+    # 3. Build AIAssistant_Setup
+    print(f"\nPhase 2: Compiling installer.py and bundling bot{ext}...")
+    add_data_flag = f"{built_bot_path}{sep}."
     
     installer_build_cmd = [
         "pyinstaller",
@@ -141,12 +149,12 @@ def build():
         f"--icon={icon_path}",
         "--collect-all", "customtkinter",
         "--add-data", add_data_flag,
-        "--name=AIAssistant_Setup",
+        f"--name=AIAssistant_Setup",
         "installer.py"
     ]
     try:
         run_command(installer_build_cmd)
-        print("Phase 2 complete: AIAssistant_Setup.exe created!")
+        print(f"Phase 2 complete: AIAssistant_Setup{ext} created!")
     except Exception as e:
         print(f"Error building installer setup: {e}")
         sys.exit(1)
@@ -154,13 +162,15 @@ def build():
     # 4. Copy finals to workspace root for convenience
     print("\nMoving final build outputs to workspace root...")
     try:
-        if os.path.exists("bot.exe"):
-            os.remove("bot.exe")
-        if os.path.exists("AIAssistant_Setup.exe"):
-            os.remove("AIAssistant_Setup.exe")
+        final_bot = f"bot{ext}"
+        final_setup = f"AIAssistant_Setup{ext}"
+        if os.path.exists(final_bot):
+            os.remove(final_bot)
+        if os.path.exists(final_setup):
+            os.remove(final_setup)
             
-        shutil.copy2(os.path.join("dist", "bot.exe"), "bot.exe")
-        shutil.copy2(os.path.join("dist", "AIAssistant_Setup.exe"), "AIAssistant_Setup.exe")
+        shutil.copy2(os.path.join("dist", final_bot), final_bot)
+        shutil.copy2(os.path.join("dist", final_setup), final_setup)
         print("Executables copied to workspace root successfully!")
     except Exception as e:
         print(f"Warning: Could not copy executables to workspace root: {e}")
@@ -171,8 +181,8 @@ def build():
     print("\nBUILD COMPLETE SUCCESS!")
     print("--------------------------------------------------")
     print("Final Deliverables:")
-    print("1. Standalone Bot EXE: bot.exe")
-    print("2. Setup Installer EXE: AIAssistant_Setup.exe")
+    print(f"1. Standalone Bot: bot{ext}")
+    print(f"2. Setup Installer: AIAssistant_Setup{ext}")
     print("--------------------------------------------------")
 
 if __name__ == "__main__":

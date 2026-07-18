@@ -36,18 +36,27 @@ class BotTrayIcon:
         self.log_path = os.path.join(config_dir, "bot.log")
         self.icon_path = os.path.join(config_dir, "app_icon.ico")
 
-    def open_logs(self):
-        if os.path.exists(self.log_path):
-            os.startfile(self.log_path)
+    def open_path(self, path):
+        import sys
+        if sys.platform == 'win32':
+            os.startfile(path)
         else:
+            import subprocess
+            if sys.platform == 'darwin':
+                subprocess.Popen(['open', path], stderr=subprocess.DEVNULL)
+            else:
+                subprocess.Popen(['xdg-open', path], stderr=subprocess.DEVNULL)
+
+    def open_logs(self):
+        if not os.path.exists(self.log_path):
             # Create empty log if doesn't exist
             with open(self.log_path, "w") as f:
                 f.write("AI Assistant Log File\n====================\n")
-            os.startfile(self.log_path)
+        self.open_path(self.log_path)
 
     def open_data_dir(self):
         if os.path.exists(self.config_dir):
-            os.startfile(self.config_dir)
+            self.open_path(self.config_dir)
 
     def launch_settings(self):
         if self.running_gui:

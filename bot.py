@@ -12,7 +12,10 @@ import threading
 
 # ─── PATH SETUP ────────────────────────────────────────
 if getattr(sys, 'frozen', False):
-    CONFIG_DIR = os.path.join(os.environ["APPDATA"], "AIAssistant")
+    if sys.platform == 'win32':
+        CONFIG_DIR = os.path.join(os.environ["APPDATA"], "AIAssistant")
+    else:
+        CONFIG_DIR = os.path.join(os.path.expanduser("~/.config"), "AIAssistant")
 else:
     CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(CONFIG_DIR, exist_ok=True)
@@ -32,7 +35,11 @@ AUTHORIZED_CHAT_ID = None
 NVIDIA_URL      = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_MODEL    = "meta/llama-3.3-70b-instruct"
 NVIDIA_VISION   = "meta/llama-3.2-90b-vision-instruct"
-GCAL_SCOPES     = ["https://www.googleapis.com/auth/calendar"]
+GOOGLE_SCOPES   = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file"
+]
 
 def save_authorized_chat_id(chat_id):
     global AUTHORIZED_CHAT_ID
@@ -55,7 +62,8 @@ def load_config():
     
     # Fallback to AppData config if running in dev mode and local config is missing
     if not getattr(sys, 'frozen', False) and not os.path.exists(config_path):
-        appdata_path = os.path.join(os.environ.get("APPDATA", ""), "AIAssistant", "config.json")
+        appdata_dir = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
+        appdata_path = os.path.join(appdata_dir, "AIAssistant", "config.json")
         if os.path.exists(appdata_path):
             config_path = appdata_path
             
@@ -404,15 +412,22 @@ def call_nvidia(messages, model=None):
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Accept": "text/event-stream",
     }
+    
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+    default_model = "meta/llama-3.3-70b-instruct"
+    if NVIDIA_API_KEY and NVIDIA_API_KEY.startswith("gsk_"):
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        default_model = "llama-3.3-70b-versatile"
+        
     payload = {
-        "model": model or NVIDIA_MODEL,
+        "model": model or default_model,
         "messages": messages,
         "max_tokens": 1024,
         "temperature": 0.7,
         "top_p": 1.00,
         "stream": True,
     }
-    response = requests.post(NVIDIA_URL, headers=headers, json=payload, stream=True)
+    response = requests.post(url, headers=headers, json=payload, stream=True, timeout=15)
     response.raise_for_status()
 
     full_text = ""
@@ -497,15 +512,22 @@ Rules:
         "Authorization": f"Bearer {NVIDIA_API_KEY}",
         "Accept": "text/event-stream",
     }
+    
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+    vision_model = "meta/llama-3.2-90b-vision-instruct"
+    if NVIDIA_API_KEY and NVIDIA_API_KEY.startswith("gsk_"):
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        vision_model = "llama-3.2-90b-vision-preview"
+        
     payload = {
-        "model": NVIDIA_VISION,
+        "model": vision_model,
         "messages": messages,
         "max_tokens": 1024,
         "temperature": 0.2,
         "stream": True,
     }
 
-    response = requests.post(NVIDIA_URL, headers=headers, json=payload, stream=True)
+    response = requests.post(url, headers=headers, json=payload, stream=True, timeout=15)
     response.raise_for_status()
 
     full_text = ""
@@ -533,18 +555,57 @@ def init_calendar():
     token_path = os.path.join(CONFIG_DIR, "token.json")
     creds_path = os.path.join(CONFIG_DIR, "credentials.json")
     
+    # Resolve credentials path (checking PyInstaller bundle, CONFIG_DIR, then AppData)
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        bundled_creds = os.path.join(meipass, "credentials.json")
+        if os.path.exists(bundled_creds):
+            creds_path = bundled_creds
+            
+    if not os.path.exists(creds_path):
+        appdata_base = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
+        appdata_creds = os.path.join(appdata_base, "AIAssistant", "credentials.json")
+        if os.path.exists(appdata_creds):
+            creds_path = appdata_creds
+            
+    # Resolve token path fallback
+    if not os.path.exists(token_path):
+        appdata_base = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
+        appdata_token = os.path.join(appdata_base, "AIAssistant", "token.json")
+        if os.path.exists(appdata_token):
+            token_path = appdata_token
+                
     if os.path.exists(token_path):
-        creds = Credentials.from_authorized_user_file(token_path, GCAL_SCOPES)
+        try:
+            # Load credentials without scopes parameter to check actual authorized scopes
+            creds = Credentials.from_authorized_user_file(token_path)
+            if creds and creds.scopes:
+                if not all(scope in creds.scopes for scope in GOOGLE_SCOPES):
+                    logging.info("🔄 Scopes updated. Re-authorization required.")
+                    creds = None
+            if creds:
+                # Reload with GOOGLE_SCOPES so the client library behaves correctly
+                creds = Credentials.from_authorized_user_file(token_path, GOOGLE_SCOPES)
+        except Exception as e:
+            logging.error(f"Error loading token.json: {e}")
+            creds = None
+            
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            logging.info("🔐 Opening browser for Google Calendar authorization...")
-            flow = InstalledAppFlow.from_client_secrets_file(creds_path, GCAL_SCOPES)
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                logging.error(f"Error refreshing credentials: {e}")
+                creds = None
+                
+        if not creds or not creds.valid:
+            logging.info("🔐 Opening browser for Google services authorization...")
+            flow = InstalledAppFlow.from_client_secrets_file(creds_path, GOOGLE_SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(token_path, "w") as f:
-            f.write(creds.to_json())
-        logging.info("✅ Google Calendar authorized!")
+            with open(token_path, "w") as f:
+                f.write(creds.to_json())
+            logging.info("✅ Google services authorized!")
+            
     calendar_service = build("calendar", "v3", credentials=creds)
     logging.info("✅ Google Calendar connected!")
 
@@ -620,6 +681,52 @@ def find_executable_smart(target):
         target_words = [target.lower()]
         
     if not target_words:
+        return None
+
+    if sys.platform != 'win32':
+        # Linux / POSIX smart search
+        import shutil
+        matched = shutil.which(target)
+        if matched:
+            return matched
+        matched = shutil.which(target.lower())
+        if matched:
+            return matched
+
+        desktop_dirs = [
+            "/usr/share/applications",
+            os.path.expanduser("~/.local/share/applications")
+        ]
+        best_candidate = None
+        best_score = 0
+        for ddir in desktop_dirs:
+            if not os.path.exists(ddir):
+                continue
+            try:
+                for root, dirs, files in os.walk(ddir):
+                    for f in files:
+                        if f.lower().endswith(".desktop"):
+                            name_no_ext = f[:-8]
+                            score = score_match(target_clean, target_words, name_no_ext)
+                            if score > best_score:
+                                try:
+                                    with open(os.path.join(root, f), 'r', errors='ignore') as df:
+                                        exec_line = None
+                                        for line in df:
+                                            if line.startswith("Exec="):
+                                                cmd = line.split("=", 1)[1].strip()
+                                                cmd = re.sub(r'%[fFuU]', '', cmd).strip()
+                                                exec_line = cmd
+                                                break
+                                        if exec_line:
+                                            best_score = score
+                                            best_candidate = exec_line
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+        if best_score >= 10:
+            return best_candidate
         return None
 
     # Common directories for shortcuts (.lnk)
@@ -703,37 +810,57 @@ def open_app_or_website(target):
         if not target_clean.startswith("http"):
             target_clean = "https://" + target_clean
         try:
-            subprocess.Popen(f'start {target_clean}', shell=True)
+            import webbrowser
+            webbrowser.open(target_clean)
             return f"✅ Opened website: {target_clean}"
         except Exception as e:
             return f"❌ Could not open website {target_clean}: {e}"
 
     # 2. Hardcoded aliases mapping for quick launch
-    apps = {
-        "chrome": "chrome", 
-        "firefox": "firefox", 
-        "notepad": "notepad",
-        "calculator": "calc", 
-        "explorer": "explorer",
-        "file explorer": "explorer", 
-        "word": "winword", 
-        "excel": "excel",
-        "powerpoint": "powerpnt", 
-        "vscode": "code", 
-        "vs code": "code",
-        "spotify": "spotify", 
-        "discord": "discord", 
-        "whatsapp": "whatsapp",
-        "terminal": "cmd", 
-        "cmd": "cmd", 
-        "command prompt": "cmd",
-        "task manager": "taskmgr", 
-        "paint": "mspaint", 
-        "vlc": "vlc",
-        "teams": "teams", 
-        "zoom": "zoom", 
-        "telegram": "telegram",
-    }
+    if sys.platform == 'win32':
+        apps = {
+            "chrome": "chrome", 
+            "firefox": "firefox", 
+            "notepad": "notepad",
+            "calculator": "calc", 
+            "explorer": "explorer",
+            "file explorer": "explorer", 
+            "word": "winword", 
+            "excel": "excel",
+            "powerpoint": "powerpnt", 
+            "vscode": "code", 
+            "vs code": "code",
+            "spotify": "spotify", 
+            "discord": "discord", 
+            "whatsapp": "whatsapp",
+            "terminal": "cmd", 
+            "cmd": "cmd", 
+            "command prompt": "cmd",
+            "task manager": "taskmgr", 
+            "paint": "mspaint", 
+            "vlc": "vlc",
+            "teams": "teams", 
+            "zoom": "zoom", 
+            "telegram": "telegram",
+        }
+    else:
+        apps = {
+            "chrome": "google-chrome",
+            "firefox": "firefox",
+            "notepad": "gedit",
+            "calculator": "gnome-calculator",
+            "explorer": "xdg-open .",
+            "file explorer": "xdg-open .",
+            "vscode": "code",
+            "vs code": "code",
+            "spotify": "spotify",
+            "discord": "discord",
+            "terminal": "x-terminal-emulator",
+            "task manager": "gnome-system-monitor",
+            "paint": "gimp",
+            "vlc": "vlc",
+            "telegram": "telegram-desktop",
+        }
     
     for key, cmd in apps.items():
         if key == target_clean:
@@ -743,12 +870,18 @@ def open_app_or_website(target):
             except Exception:
                 pass
 
-    # 3. Smart search for shortcuts (.lnk) and executables (.exe)
+    # 3. Smart search for shortcuts (.lnk / .desktop) and executables
     match_path = find_executable_smart(target)
     if match_path:
         try:
-            os.startfile(match_path)
-            app_name = os.path.splitext(os.path.basename(match_path))[0]
+            if sys.platform == 'win32':
+                os.startfile(match_path)
+            else:
+                if os.path.exists(match_path):
+                    subprocess.Popen(['xdg-open', match_path], stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.Popen(match_path, shell=True)
+            app_name = os.path.splitext(os.path.basename(match_path))[0] if '/' not in match_path and '\\' not in match_path else match_path
             return f"✅ Opened '{app_name}'"
         except Exception as e:
             return f"❌ Found '{match_path}' but failed to open: {e}"
@@ -886,6 +1019,23 @@ def search_files_raw(query, search_type="name"):
 CUSTOM_SKILLS_DIR = os.path.join(CONFIG_DIR, "custom_skills")
 os.makedirs(CUSTOM_SKILLS_DIR, exist_ok=True)
 
+# If running frozen, unpack bundled custom skills to CUSTOM_SKILLS_DIR
+if getattr(sys, 'frozen', False):
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        bundled_skills_dir = os.path.join(meipass, "custom_skills")
+        if os.path.exists(bundled_skills_dir):
+            for filename in os.listdir(bundled_skills_dir):
+                src_file = os.path.join(bundled_skills_dir, filename)
+                dest_file = os.path.join(CUSTOM_SKILLS_DIR, filename)
+                if os.path.isfile(src_file) and not os.path.exists(dest_file):
+                    try:
+                        import shutil
+                        shutil.copy2(src_file, dest_file)
+                        logging.info(f"Unpacked bundled custom skill: {filename}")
+                    except Exception as e:
+                        logging.error(f"Failed to unpack bundled custom skill {filename}: {e}")
+
 restart_pending = False
 
 def get_custom_skills_metadata():
@@ -1001,52 +1151,95 @@ CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
 
 def get_clipboard_text():
-    import ctypes
-    try:
-        if not ctypes.windll.user32.OpenClipboard(None):
-            return "Error: Could not open clipboard"
+    if sys.platform == 'win32':
+        import ctypes
         try:
-            handle = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
-            if not handle:
-                return ""
-            ptr = ctypes.windll.kernel32.GlobalLock(handle)
-            if not ptr:
-                return ""
-            text = ctypes.c_wchar_p(ptr).value
-            ctypes.windll.kernel32.GlobalUnlock(handle)
+            if not ctypes.windll.user32.OpenClipboard(None):
+                return "Error: Could not open clipboard"
+            try:
+                handle = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
+                if not handle:
+                    return ""
+                ptr = ctypes.windll.kernel32.GlobalLock(handle)
+                if not ptr:
+                    return ""
+                text = ctypes.c_wchar_p(ptr).value
+                ctypes.windll.kernel32.GlobalUnlock(handle)
+                return text or ""
+            finally:
+                ctypes.windll.user32.CloseClipboard()
+        except Exception as e:
+            return f"Error: {e}"
+    else:
+        for cmd in (['xclip', '-selection', 'clipboard', '-o'], ['xsel', '-b', '-o']):
+            try:
+                return subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode('utf-8')
+            except Exception:
+                continue
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+            text = root.clipboard_get()
+            root.destroy()
             return text or ""
-        finally:
-            ctypes.windll.user32.CloseClipboard()
-    except Exception as e:
-        return f"Error: {e}"
+        except Exception:
+            return ""
 
 def set_clipboard_text(text):
-    import ctypes
-    try:
-        if not ctypes.windll.user32.OpenClipboard(None):
-            return False
+    if sys.platform == 'win32':
+        import ctypes
         try:
-            ctypes.windll.user32.EmptyClipboard()
-            text_bytes = (text + '\0').encode('utf-16le')
-            size = len(text_bytes)
-            handle = ctypes.windll.kernel32.GlobalAlloc(GMEM_MOVEABLE, size)
-            if not handle:
+            if not ctypes.windll.user32.OpenClipboard(None):
                 return False
-            ptr = ctypes.windll.kernel32.GlobalLock(handle)
-            if not ptr:
-                ctypes.windll.kernel32.GlobalFree(handle)
-                return False
-            ctypes.memmove(ptr, text_bytes, size)
-            ctypes.windll.kernel32.GlobalUnlock(handle)
-            if not ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, handle):
-                ctypes.windll.kernel32.GlobalFree(handle)
-                return False
+            try:
+                ctypes.windll.user32.EmptyClipboard()
+                text_bytes = (text + '\0').encode('utf-16le')
+                size = len(text_bytes)
+                handle = ctypes.windll.kernel32.GlobalAlloc(GMEM_MOVEABLE, size)
+                if not handle:
+                    return False
+                ptr = ctypes.windll.kernel32.GlobalLock(handle)
+                if not ptr:
+                    ctypes.windll.kernel32.GlobalFree(handle)
+                    return False
+                ctypes.memmove(ptr, text_bytes, size)
+                ctypes.windll.kernel32.GlobalUnlock(handle)
+                if not ctypes.windll.user32.SetClipboardData(CF_UNICODETEXT, handle):
+                    ctypes.windll.kernel32.GlobalFree(handle)
+                    return False
+                return True
+            finally:
+                ctypes.windll.user32.CloseClipboard()
+        except Exception as e:
+            logging.error(f"Error setting clipboard: {e}")
+            return False
+    else:
+        try:
+            p = subprocess.Popen(['xclip', '-selection', 'clipboard', '-i'], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            p.communicate(input=text.encode('utf-8'))
+            if p.returncode == 0:
+                return True
+        except Exception:
+            pass
+        try:
+            p = subprocess.Popen(['xsel', '-b', '-i'], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            p.communicate(input=text.encode('utf-8'))
+            if p.returncode == 0:
+                return True
+        except Exception:
+            pass
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            root.update()
+            root.destroy()
             return True
-        finally:
-            ctypes.windll.user32.CloseClipboard()
-    except Exception as e:
-        logging.error(f"Error setting clipboard: {e}")
-        return False
+        except Exception:
+            return False
 
 # ─── GRID SCREENSHOT & INTERACTIVE CONTROL ─────────────
 def generate_grid_screenshot():
@@ -1502,8 +1695,27 @@ async def execute_skill(skill_name, parameters, update, context):
         return {"output": res, "feed_back_to_ai": True}
         
     elif skill_name == "lock_pc":
-        import ctypes
-        ctypes.windll.user32.LockWorkStation()
+        if sys.platform == 'win32':
+            import ctypes
+            ctypes.windll.user32.LockWorkStation()
+        else:
+            lock_commands = [
+                ["xdg-screensaver", "lock"],
+                ["loginctl", "lock-session"],
+                ["gnome-screensaver-command", "-l"],
+                ["cinnamon-screensaver-command", "-l"],
+                ["dm-tool", "lock"]
+            ]
+            locked = False
+            for cmd in lock_commands:
+                try:
+                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                    locked = True
+                    break
+                except Exception:
+                    continue
+            if not locked:
+                return {"output": "Error: Could not lock PC. No compatible lock command found.", "feed_back_to_ai": True}
         import time
         time.sleep(1.5)
         try:
@@ -1514,7 +1726,7 @@ async def execute_skill(skill_name, parameters, update, context):
                 caption="🔒 PC is locked!"
             )
         except Exception:
-            await update.message.reply_text("🔒 PC is locked! (Screenshot protected by Windows)")
+            await update.message.reply_text("🔒 PC is locked! (Screenshot protected by OS)")
         return {"output": "PC locked successfully.", "feed_back_to_ai": True}
         
     elif skill_name == "unlock_pc":
@@ -2144,7 +2356,11 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── CHAT HANDLER ──────────────────────────────────────
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global restart_pending
+    if update.effective_user:
+        msg_text = update.message.text if update.message else ""
+        logging.info(f"📩 Received telegram message from {update.effective_user.id}: '{msg_text}'")
     if not await is_authorized(update):
+        logging.warning(f"🚫 Unauthorized attempt by user {update.effective_user.id if update.effective_user else 'unknown'}")
         return
     uid = update.effective_user.id
     user_msg = update.message.text
