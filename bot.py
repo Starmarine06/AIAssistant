@@ -145,6 +145,162 @@ async def schedule_reminder(reminder, bot):
     except Exception as e:
         logging.error(f"Error sending reminder message: {e}")
 
+# ─── UPDATE SYSTEM ────────────────────────────────────
+VERSION = "1.0.0"
+
+def is_newer_version(current, remote):
+    try:
+        c_parts = [int(x) for x in current.strip('v').split('.')]
+        r_parts = [int(x) for x in remote.strip('v').split('.')]
+        return r_parts > c_parts
+    except Exception:
+        return remote != current
+
+def get_latest_update_info():
+    import requests
+    url = "https://raw.githubusercontent.com/Starmarine06/AIAssistant/main/version.json"
+    try:
+        r = requests.get(url, headers={"User-Agent": "AIAssistant-Updater"}, timeout=5)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        logging.error(f"Error fetching version.json: {e}")
+    return None
+
+async def check_for_updates_startup(application):
+    if not AUTHORIZED_CHAT_ID:
+        return
+    try:
+        await asyncio.sleep(5)
+        await run_update_check_silent(application.bot)
+    except Exception as e:
+        logging.error(f"Startup update check failed: {e}")
+
+async def run_update_check_silent(bot):
+    update_info = get_latest_update_info()
+    if update_info and is_newer_version(VERSION, update_info.get("version")):
+        latest_ver = update_info.get("version")
+        notes = update_info.get("release_notes", "No release notes.")
+        msg = (
+            f"🔔 *New Update Available!*\n"
+            f"Current: `v{VERSION}`\n"
+            f"Latest: `v{latest_ver}`\n\n"
+            f"*Release Notes:*\n{notes}\n\n"
+            f"Would you like to update now?"
+        )
+        keyboard = [[
+            InlineKeyboardButton("⬇️ Update Bot", callback_data="update_bot")
+        ]]
+        await bot.send_message(
+            chat_id=AUTHORIZED_CHAT_ID,
+            text=msg,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+async def check_update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if AUTHORIZED_CHAT_ID and uid != AUTHORIZED_CHAT_ID:
+        return
+        
+    status_msg = await update.message.reply_text("🔍 Checking for updates...")
+    update_info = get_latest_update_info()
+    
+    if not update_info:
+        await status_msg.edit_text("❌ Failed to fetch update information from GitHub.")
+        return
+        
+    latest_ver = update_info.get("version")
+    if is_newer_version(VERSION, latest_ver):
+        notes = update_info.get("release_notes", "No release notes.")
+        msg = (
+            f"🔔 *New Update Available!*\n"
+            f"Current: `v{VERSION}`\n"
+            f"Latest: `v{latest_ver}`\n\n"
+            f"*Release Notes:*\n{notes}\n\n"
+            f"Would you like to update now?"
+        )
+        keyboard = [[
+            InlineKeyboardButton("⬇️ Update Bot", callback_data="update_bot")
+        ]]
+        await status_msg.edit_text(
+            text=msg,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await status_msg.edit_text(f"✅ Your AI Assistant is up-to-date (Version `v{VERSION}`).")
+
+async def update_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    uid = query.from_user.id
+    if AUTHORIZED_CHAT_ID and uid != AUTHORIZED_CHAT_ID:
+        return
+        
+    await query.edit_message_text("📥 Fetching latest update info...")
+    
+    update_info = get_latest_update_info()
+    if not update_info:
+        await query.edit_message_text("❌ Failed to fetch update information. Update cancelled.")
+        return
+        
+    latest_ver = update_info.get("version")
+    
+    is_frozen = getattr(sys, 'frozen', False)
+    if is_frozen:
+        download_url = update_info.get("download_url")
+        target_filename = "bot.exe"
+    else:
+        download_url = update_info.get("download_py_url")
+        target_filename = "bot.py"
+        
+    if not download_url:
+        await query.edit_message_text(f"❌ No download URL found for {'executable' if is_frozen else 'Python script'}.")
+        return
+        
+    await query.edit_message_text(f"⬇️ Downloading `v{latest_ver}`...")
+    
+    import requests
+    exe_dir = os.path.dirname(sys.executable) if is_frozen else os.path.dirname(os.path.abspath(__file__))
+    new_filepath = os.path.join(exe_dir, f"{target_filename}.new")
+    current_filepath = sys.executable if is_frozen else os.path.abspath(__file__)
+    
+    try:
+        r = requests.get(download_url, stream=True, timeout=30)
+        r.raise_for_status()
+        with open(new_filepath, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    except Exception as e:
+        if os.path.exists(new_filepath):
+            try: os.remove(new_filepath)
+            except: pass
+        await query.edit_message_text(f"❌ Download failed: {e}")
+        return
+        
+    await query.edit_message_text("🔄 Applying update & restarting...")
+    
+    try:
+        old_filepath = current_filepath + ".old"
+        if os.path.exists(old_filepath):
+            try: os.remove(old_filepath)
+            except: pass
+            
+        os.rename(current_filepath, old_filepath)
+        os.rename(new_filepath, current_filepath)
+        
+        if is_frozen:
+            subprocess.Popen([current_filepath] + sys.argv[1:], cwd=exe_dir, start_new_session=True)
+        else:
+            subprocess.Popen([sys.executable, current_filepath] + sys.argv[1:], cwd=exe_dir, start_new_session=True)
+            
+        await query.edit_message_text("✅ Bot successfully updated and restarted!")
+        os._exit(0)
+    except Exception as e:
+        await query.edit_message_text(f"❌ Failed to swap files: {e}. Please manually restart.")
+
 async def post_init(application):
     # Initialize reminders
     reminders = load_reminders()
@@ -176,6 +332,8 @@ async def post_init(application):
 
     # Start background task scheduler
     asyncio.create_task(run_task_scheduler(application.bot))
+    # Start background update check
+    asyncio.create_task(check_for_updates_startup(application))
 
 # ─── SAVED CONTACTS ADDRESS BOOK ─────────────────────────
 CONTACTS_FILE = os.path.join(CONFIG_DIR, "contacts.json")
@@ -2236,6 +2394,18 @@ def stop_bot():
     logging.info("Stopping bot...")
     os._exit(0)
 
+def cleanup_old_version():
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+    old_exe = os.path.join(exe_dir, "bot.exe.old")
+    old_py = os.path.join(exe_dir, "bot.py.old")
+    for old_file in [old_exe, old_py]:
+        if os.path.exists(old_file):
+            try:
+                os.remove(old_file)
+                logging.info(f"Cleaned up old version file: {old_file}")
+            except Exception as e:
+                logging.warning(f"Could not remove old version file {old_file}: {e}")
+
 def restart_bot():
     logging.info("Restarting bot process...")
     if getattr(sys, 'frozen', False):
@@ -2257,11 +2427,14 @@ if __name__ == "__main__":
         sys.exit(1)
         
     wait_for_internet()
+    cleanup_old_version()
     init_calendar()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(file_callback, pattern="^file_"))
     app.add_handler(CallbackQueryHandler(reminder_callback, pattern="^remcal_"))
+    app.add_handler(CommandHandler("checkupdate", check_update_command))
+    app.add_handler(CallbackQueryHandler(update_callback, pattern="^update_bot$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
