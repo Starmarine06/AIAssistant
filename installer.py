@@ -60,6 +60,15 @@ class InstallerGUI(ctk.CTk):
         if self.current_frame:
             self.current_frame.destroy()
 
+    def update_status(self, text, progress=None, text_color=None):
+        def update():
+            self.status_label.configure(text=text)
+            if progress is not None:
+                self.progress_bar.set(progress)
+            if text_color is not None:
+                self.status_label.configure(text_color=text_color)
+        self.after(0, update)
+
     def show_welcome_screen(self):
         self.clear_frame()
         
@@ -102,7 +111,6 @@ class InstallerGUI(ctk.CTk):
             command=self.show_location_screen
         )
         next_btn.pack(side="bottom", pady=20)
-
     def show_location_screen(self):
         self.clear_frame()
         
@@ -149,7 +157,7 @@ class InstallerGUI(ctk.CTk):
         )
         browse_btn.pack(side="right")
         
-        # Buttons frame
+        # Bottom Buttons
         btn_frame = ctk.CTkFrame(self.current_frame, fg_color="transparent")
         btn_frame.pack(side="bottom", fill="x", padx=40, pady=20)
         
@@ -171,7 +179,7 @@ class InstallerGUI(ctk.CTk):
             command=self.start_installation
         )
         install_btn.pack(side="right")
-
+ 
     def browse_dir(self):
         chosen_dir = filedialog.askdirectory(
             title="Select Install Directory",
@@ -180,7 +188,7 @@ class InstallerGUI(ctk.CTk):
         if chosen_dir:
             self.install_dir = os.path.abspath(chosen_dir)
             self.dir_label.configure(text=self.install_dir)
-
+ 
     def start_installation(self):
         self.clear_frame()
         
@@ -208,17 +216,22 @@ class InstallerGUI(ctk.CTk):
         
         # Start installation thread
         threading.Thread(target=self.run_install, daemon=True).start()
-
+ 
     def run_install(self):
         try:
+            # Terminate any running bot.exe process to release the file lock
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", "bot.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception:
+                pass
+                
             # 1. Create directory structure
-            self.status_label.configure(text="Creating directories...")
+            self.update_status("Creating directories...", 0.2)
             os.makedirs(self.install_dir, exist_ok=True)
-            self.progress_bar.set(0.2)
             time.sleep(0.5)
             
             # 2. Locate bundled bot.exe and copy it
-            self.status_label.configure(text="Extracting application files...")
+            self.update_status("Extracting application files...", 0.4)
             # If running as PyInstaller EXE, the resource is in sys._MEIPASS
             meipass = getattr(sys, '_MEIPASS', None)
             
@@ -240,17 +253,16 @@ class InstallerGUI(ctk.CTk):
                 with open(dest_exe, "w") as f:
                     f.write("DUMMY BOT EXE CONTENT (For testing installer)")
             
-            self.progress_bar.set(0.5)
+            self.update_status("Creating desktop shortcuts...", 0.6)
             time.sleep(0.5)
             
             # 3. Create Shortcuts
-            self.status_label.configure(text="Creating desktop shortcuts...")
             desktop_dir = os.path.join(os.environ["USERPROFILE"], "Desktop")
             desktop_shortcut = os.path.join(desktop_dir, "AI Assistant.lnk")
             create_shortcut(dest_exe, desktop_shortcut)
             
             # Start Menu shortcut
-            self.status_label.configure(text="Adding to Start Menu...")
+            self.update_status("Adding to Start Menu...", 0.7)
             start_menu_dir = os.path.join(
                 os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs"
             )
@@ -258,12 +270,11 @@ class InstallerGUI(ctk.CTk):
             start_menu_shortcut = os.path.join(start_menu_dir, "AI Assistant.lnk")
             create_shortcut(dest_exe, start_menu_shortcut)
             
-            self.progress_bar.set(0.8)
             time.sleep(0.5)
             
             # 4. Handle Launch on Startup
             if self.launch_on_startup.get():
-                self.status_label.configure(text="Configuring startup settings...")
+                self.update_status("Configuring startup settings...", 0.8)
                 startup_dir = os.path.join(
                     os.environ["APPDATA"], "Microsoft", "Windows", "Start Menu", "Programs", "Startup"
                 )
@@ -271,15 +282,14 @@ class InstallerGUI(ctk.CTk):
                 startup_shortcut = os.path.join(startup_dir, "AIAssistant.lnk")
                 create_shortcut(dest_exe, startup_shortcut)
             
-            self.progress_bar.set(1.0)
-            self.status_label.configure(text="Installation successful!")
+            self.update_status("Installation successful!", 1.0)
             time.sleep(0.5)
             
             # Transition to finished screen in the GUI thread
             self.after(0, self.show_finished_screen)
             
         except Exception as e:
-            self.after(0, lambda: self.status_label.configure(text=f"❌ Error: {e}", text_color="#ff5555"))
+            self.update_status(f"❌ Error: {e}", text_color="#ff5555")
 
     def show_finished_screen(self):
         self.clear_frame()
