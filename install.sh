@@ -7,10 +7,10 @@ echo "=== AI Assistant Linux Installer ==="
 if [ -x "$(command -v apt-get)" ]; then
     echo "Installing system dependencies via apt..."
     sudo apt-get update
-    sudo apt-get install -y xclip xdotool scrot python3-tk python3-pip python3-venv
+    sudo apt-get install -y xclip xdotool scrot python3-tk python3-pip python3-venv plocate fd-find grim gnome-screenshot
 else
     echo "Warning: Package manager 'apt-get' not found."
-    echo "Please ensure xclip, xdotool, scrot, and python3-tk are installed on your system."
+    echo "Please ensure xclip, xdotool, scrot, python3-tk, plocate, fd, grim, and gnome-screenshot are installed on your system."
 fi
 
 # 2. Setup python virtual environment

@@ -665,7 +665,62 @@ def create_multiple_events(events_list):
     return created, failed
 
 # ─── COMPUTER CONTROL ──────────────────────────────────
+# Helper functions for cross-platform app/file handling
+def is_url(target):
+    target_clean = target.strip().lower()
+    if target_clean.startswith(("http://", "https://", "www.")):
+        return True
+    file_extensions = {
+        'txt', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'png', 'jpg', 'jpeg', 
+        'gif', 'bmp', 'zip', 'tar', 'gz', 'rar', 'mp3', 'mp4', 'avi', 'mkv', 'py', 'sh', 
+        'js', 'html', 'css', 'json', 'xml', 'md', 'ico', 'exe', 'lnk', 'desktop'
+    }
+    parts = target_clean.split('.')
+    if len(parts) > 1:
+        ext = parts[-1]
+        if ext in file_extensions:
+            return False
+        if ext.isalpha() and 2 <= len(ext) <= 6:
+            return True
+    return False
+
+def command_exists(cmd):
+    import shutil
+    if not cmd:
+        return False
+    cmd_part = cmd.split()[0]
+    return shutil.which(cmd_part) is not None
+
 def take_screenshot():
+    if sys.platform != 'win32' and os.environ.get("WAYLAND_DISPLAY"):
+        import tempfile
+        temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        success = False
+        try:
+            subprocess.run(["grim", temp_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            success = True
+        except Exception:
+            pass
+            
+        if not success:
+            try:
+                subprocess.run(["gnome-screenshot", "-f", temp_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                success = True
+            except Exception:
+                pass
+                
+        if success and os.path.exists(temp_path):
+            try:
+                with open(temp_path, "rb") as f:
+                    img_data = io.BytesIO(f.read())
+                os.remove(temp_path)
+                return img_data
+            except Exception:
+                pass
+
     screenshot = pyautogui.screenshot()
     img_bytes = io.BytesIO()
     screenshot.save(img_bytes, format="PNG")
@@ -819,20 +874,56 @@ def find_executable_smart(target):
     return None
 
 def open_app_or_website(target):
-    target_clean = target.strip().lower()
+    target_clean = target.strip()
+    target_lower = target_clean.lower()
     
     # 1. Check if it's a URL
-    if ("." in target_clean and " " not in target_clean) or target_clean.startswith("http"):
-        if not target_clean.startswith("http"):
-            target_clean = "https://" + target_clean
+    if is_url(target_lower):
+        url = target_clean
+        if not url.lower().startswith("http"):
+            url = "https://" + url
         try:
             import webbrowser
-            webbrowser.open(target_clean)
-            return f"✅ Opened website: {target_clean}"
+            webbrowser.open(url)
+            return f"✅ Opened website: {url}"
         except Exception as e:
-            return f"❌ Could not open website {target_clean}: {e}"
+            return f"❌ Could not open website {url}: {e}"
 
-    # 2. Hardcoded aliases mapping for quick launch
+    # 2. Check if target is a direct existing path
+    if os.path.exists(target_clean):
+        try:
+            if sys.platform == 'win32':
+                os.startfile(target_clean)
+            else:
+                subprocess.Popen(['xdg-open', target_clean], stderr=subprocess.DEVNULL)
+            return f"✅ Opened path: {target_clean}"
+        except Exception as e:
+            return f"❌ Failed to open path '{target_clean}': {e}"
+
+    # 3. Check if it's a file (has extension or is likely a file name)
+    is_file_target = False
+    parts = os.path.basename(target_lower).split('.')
+    if len(parts) > 1 and parts[-1].isalpha() and len(parts[-1]) <= 5:
+        is_file_target = True
+
+    if is_file_target:
+        # Search for the file
+        results = search_files_raw(target_clean, "name")
+        if results:
+            match_file = results[0]
+            try:
+                if sys.platform == 'win32':
+                    os.startfile(match_file)
+                else:
+                    subprocess.Popen(['xdg-open', match_file], stderr=subprocess.DEVNULL)
+                return f"✅ Opened file: {match_file}"
+            except Exception as e:
+                return f"❌ Found file '{match_file}' but failed to open: {e}"
+        else:
+            return f"❌ File '{target_clean}' not found."
+
+    # 4. Otherwise, treat as application name
+    # Hardcoded aliases mapping for quick launch
     if sys.platform == 'win32':
         apps = {
             "chrome": "chrome", 
@@ -879,20 +970,42 @@ def open_app_or_website(target):
         }
     
     for key, cmd in apps.items():
-        if key == target_clean:
+        if key == target_lower:
+            if not command_exists(cmd):
+                continue
             try:
                 subprocess.Popen(cmd, shell=True)
                 return f"✅ Opened {key}"
             except Exception:
                 pass
 
-    # 3. Smart search for shortcuts (.lnk / .desktop) and executables
-    match_path = find_executable_smart(target)
+    # Smart search for shortcuts (.lnk / .desktop) and executables
+    match_path = find_executable_smart(target_clean)
     if match_path:
         try:
             if sys.platform == 'win32':
                 os.startfile(match_path)
             else:
+                # If it's a .desktop file, check launcher utilities
+                if match_path.endswith(".desktop"):
+                    desktop_name = os.path.basename(match_path)
+                    launched = False
+                    if command_exists("gio"):
+                        try:
+                            subprocess.Popen(["gio", "launch", match_path], stderr=subprocess.DEVNULL)
+                            launched = True
+                        except Exception:
+                            pass
+                    if not launched and command_exists("gtk-launch"):
+                        try:
+                            subprocess.Popen(["gtk-launch", desktop_name], stderr=subprocess.DEVNULL)
+                            launched = True
+                        except Exception:
+                            pass
+                    if launched:
+                        return f"✅ Opened app: {desktop_name[:-8]}"
+                
+                # Fallback to direct run or xdg-open
                 if os.path.exists(match_path):
                     subprocess.Popen(['xdg-open', match_path], stderr=subprocess.DEVNULL)
                 else:
@@ -902,12 +1015,15 @@ def open_app_or_website(target):
         except Exception as e:
             return f"❌ Found '{match_path}' but failed to open: {e}"
 
-    # 4. Fallback execution
-    try:
-        subprocess.Popen(target_clean, shell=True)
-        return f"✅ Executed: {target_clean}"
-    except Exception as e:
-        return f"❌ Could not open '{target_clean}': {e}"
+    # Final fallback execution if command exists in path
+    if command_exists(target_clean):
+        try:
+            subprocess.Popen(target_clean, shell=True)
+            return f"✅ Executed: {target_clean}"
+        except Exception as e:
+            return f"❌ Could not open '{target_clean}': {e}"
+
+    return f"❌ Could not find or open application or file '{target_clean}'."
 
 def search_files_python(search_dir, query, search_type, max_results=20):
     """Pure Python search using os.scandir for speed and no dependencies."""
@@ -920,6 +1036,8 @@ def search_files_python(search_dir, query, search_type, max_results=20):
         "local settings", "application data", "node_modules", ".git", 
         ".venv", "venv", "env", "__pycache__", "cookies", "history", "temp", "tmp"
     }
+    if sys.platform != 'win32':
+        skip_dirs.update({"proc", "sys", "dev", "var", "run", "boot", "lib", "lib64", "etc", "lost+found", "snap"})
 
     def walk_dir(path, current_depth=0, max_depth=4):
         if len(results) >= max_results or current_depth > max_depth:
@@ -955,7 +1073,7 @@ def search_files_python(search_dir, query, search_type, max_results=20):
     return results
 
 def search_files_raw(query, search_type="name"):
-    """Search for files. Tries fd (sharkdp/fd) first, falls back to pure Python."""
+    """Search for files. Tries plocate, fd/fdfind, find, then falls back to pure Python."""
     query = query.strip().strip('"').strip("'")
 
     # Directories to search first (user folders = fast)
@@ -968,66 +1086,130 @@ def search_files_raw(query, search_type="name"):
         os.path.expanduser("~/Music"),
     ]
 
+    results = []
+
+    # 1. Try plocate (extremely fast, cached index)
+    if sys.platform != 'win32' and command_exists("plocate"):
+        try:
+            search_pattern = f"*.{query.lstrip('.')}" if search_type == "extension" else f"*{query}*"
+            cmd = ["plocate", "-i", "-l", "20", search_pattern]
+            output = subprocess.check_output(cmd, timeout=10, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
+            lines = [l.strip() for l in output.strip().splitlines() if l.strip()]
+            
+            # Filter out virtual filesystems or hidden folders
+            filtered = []
+            for f in lines:
+                if any(x in f for x in ["/proc/", "/sys/", "/dev/", "/snap/", "/lost+found/"]):
+                    continue
+                filtered.append(f)
+            if filtered:
+                return filtered[:20]
+        except Exception:
+            pass
+
+    # 2. Try fd or fdfind
+    fd_bin = None
+    if command_exists("fd"):
+        fd_bin = "fd"
+    elif command_exists("fdfind"):
+        fd_bin = "fdfind"
+
     def run_fd(search_dir, max_results=20):
-        """Run fd in a given directory and return list of file paths."""
-        cmd = ["fd", "--type", "f", "--max-results", str(max_results)]
+        if not fd_bin:
+            return None
+        cmd = [fd_bin, "--type", "f", "--max-results", str(max_results)]
         if search_type == "extension":
             cmd += ["--extension", query.lstrip(".")]
         else:
             cmd.append(query)
         cmd += ["--search-path", search_dir]
         try:
-            output = subprocess.check_output(
-                cmd, timeout=15, stderr=subprocess.DEVNULL
-            ).decode("utf-8", errors="ignore")
+            output = subprocess.check_output(cmd, timeout=15, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
             return [l.strip() for l in output.strip().splitlines() if l.strip()]
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-            # Return None to indicate fd failed/is not available
+        except Exception:
             return None
 
-    results = []
-    fd_available = True
+    fd_available = fd_bin is not None
 
-    # Step 1: Search user folders first
-    for d in priority_dirs:
-        if os.path.exists(d):
-            fd_res = run_fd(d, max_results=20 - len(results))
-            if fd_res is None:
-                fd_available = False
-                break
-            results.extend(fd_res)
-        if len(results) >= 20:
-            break
-
-    # If fd is available, try searching full C: drive
-    if fd_available and len(results) < 20:
-        full_results = run_fd("C:\\", max_results=20 - len(results))
-        if full_results is not None:
-            existing = set(results)
-            for f in full_results:
-                if f not in existing:
-                    results.append(f)
-                if len(results) >= 20:
-                    break
-
-    # Fallback: If fd is not available, use pure Python search
-    if not fd_available:
-        results = []
+    if fd_available:
+        # Search priority dirs
         for d in priority_dirs:
             if os.path.exists(d):
-                results.extend(search_files_python(d, query, search_type, max_results=20 - len(results)))
-                if len(results) >= 20:
+                fd_res = run_fd(d, max_results=20 - len(results))
+                if fd_res is not None:
+                    results.extend(fd_res)
+            if len(results) >= 20:
+                break
+        
+        # Search full drive/root
+        if len(results) < 20:
+            root_dir = "C:\\" if sys.platform == 'win32' else "/"
+            full_results = run_fd(root_dir, max_results=20 - len(results))
+            if full_results is not None:
+                existing = set(results)
+                for f in full_results:
+                    if sys.platform != 'win32' and any(x in f for x in ["/proc/", "/sys/", "/dev/", "/snap/", "/lost+found/"]):
+                        continue
+                    if f not in existing:
+                        results.append(f)
+                    if len(results) >= 20:
+                        break
+
+    # 3. Try standard find command on Linux
+    if sys.platform != 'win32' and not fd_available and len(results) < 20:
+        try:
+            for d in priority_dirs:
+                if os.path.exists(d):
+                    search_pat = f"*.{query.lstrip('.')}" if search_type == "extension" else f"*{query}*"
+                    cmd = ["find", d, "-type", "f", "-iname", search_pat]
+                    output = subprocess.check_output(cmd, timeout=10, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
+                    lines = [l.strip() for l in output.strip().splitlines() if l.strip()]
+                    results.extend(lines)
+                    if len(results) >= 20:
+                        results = results[:20]
+                        break
+            
+            if len(results) < 20:
+                search_pat = f"*.{query.lstrip('.')}" if search_type == "extension" else f"*{query}*"
+                cmd = ["find", "/", "-maxdepth", "3", "-type", "f", "-iname", search_pat]
+                output = subprocess.check_output(cmd, timeout=10, stderr=subprocess.DEVNULL).decode("utf-8", errors="ignore")
+                lines = [l.strip() for l in output.strip().splitlines() if l.strip()]
+                existing = set(results)
+                for f in lines:
+                    if any(x in f for x in ["/proc/", "/sys/", "/dev/", "/snap/", "/lost+found/"]):
+                        continue
+                    if f not in existing:
+                        results.append(f)
+                    if len(results) >= 20:
+                        break
+        except Exception:
+            pass
+
+    # 4. Fallback: Pure Python search
+    if len(results) < 5:
+        python_results = []
+        for d in priority_dirs:
+            if os.path.exists(d):
+                python_results.extend(search_files_python(d, query, search_type, max_results=20 - len(python_results)))
+                if len(python_results) >= 20:
                     break
         
-        # If still not enough results, scan C:\ but with limited depth to keep it fast
-        if len(results) < 20:
-            c_results = search_files_python("C:\\", query, search_type, max_results=20 - len(results))
-            existing = set(results)
+        if len(python_results) < 20:
+            root_dir = "C:\\" if sys.platform == 'win32' else "/"
+            c_results = search_files_python(root_dir, query, search_type, max_results=20 - len(python_results))
+            existing = set(python_results)
             for f in c_results:
                 if f not in existing:
-                    results.append(f)
-                if len(results) >= 20:
+                    python_results.append(f)
+                if len(python_results) >= 20:
                     break
+        
+        existing_res = set(results)
+        for r in python_results:
+            if r not in existing_res:
+                results.append(r)
+            if len(results) >= 20:
+                break
 
     return results
 
