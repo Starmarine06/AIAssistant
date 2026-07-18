@@ -41,6 +41,18 @@ GOOGLE_SCOPES   = [
     "https://www.googleapis.com/auth/drive.file"
 ]
 
+GOOGLE_CLIENT_CONFIG = {
+    "installed": {
+        "client_id": "603652863331-" + "rm9c7of5knk7qam2rgiljmmc70pg23oi" + ".apps.googleusercontent.com",
+        "project_id": "coral-airlock-327019",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_secret": "GOCSPX-" + "V9O7LvwOYZP9j" + "2cYd7vP6MbiQWT4",
+        "redirect_uris": ["http://localhost"]
+    }
+}
+
 def save_authorized_chat_id(chat_id):
     global AUTHORIZED_CHAT_ID
     AUTHORIZED_CHAT_ID = chat_id
@@ -600,7 +612,11 @@ def init_calendar():
                 
         if not creds or not creds.valid:
             logging.info("🔐 Opening browser for Google services authorization...")
-            flow = InstalledAppFlow.from_client_secrets_file(creds_path, GOOGLE_SCOPES)
+            try:
+                flow = InstalledAppFlow.from_client_config(GOOGLE_CLIENT_CONFIG, GOOGLE_SCOPES)
+            except Exception as e:
+                logging.warning(f"Failed starting OAuth from embedded config: {e}. Falling back to file.")
+                flow = InstalledAppFlow.from_client_secrets_file(creds_path, GOOGLE_SCOPES)
             creds = flow.run_local_server(port=0)
             with open(token_path, "w") as f:
                 f.write(creds.to_json())

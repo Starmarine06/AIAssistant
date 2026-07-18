@@ -96,37 +96,6 @@ class SettingsGUI(ctk.CTk):
         )
         self.nv_entry.pack(padx=40, pady=5)
         
-        gcal_label = ctk.CTkLabel(
-            tab1, 
-            text="Google Calendar Credentials (credentials.json):", 
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        gcal_label.pack(anchor="w", padx=40, pady=(15, 2))
-        
-        file_frame = ctk.CTkFrame(tab1, fg_color="transparent")
-        file_frame.pack(fill="x", padx=40, pady=5)
-        
-        self.file_label = ctk.CTkLabel(
-            file_frame, 
-            text="No credentials file selected", 
-            width=430, 
-            anchor="w",
-            text_color="#aaaaaa",
-            fg_color="#2b2b2b",
-            height=35,
-            corner_radius=6
-        )
-        self.file_label.pack(side="left", padx=(0, 10))
-        
-        browse_btn = ctk.CTkButton(
-            file_frame, 
-            text="Browse File", 
-            width=140, 
-            height=35,
-            command=self.browse_credentials
-        )
-        browse_btn.pack(side="right")
-        
         btn_frame = ctk.CTkFrame(tab1, fg_color="transparent")
         btn_frame.pack(fill="x", padx=40, pady=(40, 10))
         
@@ -278,19 +247,6 @@ class SettingsGUI(ctk.CTk):
             self.time_entry.configure(placeholder_text="600")
             self.time_entry.grid(row=3, column=1, padx=5, pady=2, sticky="w")
 
-    # --- CREDENTIALS BROWSER ---
-    def browse_credentials(self):
-        file_path = filedialog.askopenfilename(
-            title="Select credentials.json",
-            filetypes=[("JSON files", "*.json")]
-        )
-        if file_path:
-            self.selected_creds_path = file_path
-            self.file_label.configure(
-                text=os.path.basename(file_path),
-                text_color="#55ff55"
-            )
-
     def load_existing_config(self):
         if os.path.exists(self.config_path):
             try:
@@ -300,14 +256,6 @@ class SettingsGUI(ctk.CTk):
                 self.nv_entry.insert(0, data.get("nvidia_api_key", ""))
             except Exception:
                 pass
-        
-        dest_creds = os.path.join(self.config_dir, "credentials.json")
-        if os.path.exists(dest_creds):
-            self.selected_creds_path = dest_creds
-            self.file_label.configure(
-                text="credentials.json (Imported)",
-                text_color="#55ff55"
-            )
 
     def save_config(self):
         tg_token = self.tg_entry.get().strip()
@@ -319,18 +267,8 @@ class SettingsGUI(ctk.CTk):
         if not nv_key:
             self.status_label.configure(text="❌ NVIDIA API key is required")
             return
-        if not self.selected_creds_path:
-            self.status_label.configure(text="❌ Google credentials.json is required")
-            return
             
         os.makedirs(self.config_dir, exist_ok=True)
-        dest_creds = os.path.join(self.config_dir, "credentials.json")
-        if self.selected_creds_path != dest_creds:
-            try:
-                shutil.copy(self.selected_creds_path, dest_creds)
-            except Exception as e:
-                self.status_label.configure(text=f"❌ Error copying credentials: {e}")
-                return
                 
         config_data = {
             "telegram_token": tg_token,
