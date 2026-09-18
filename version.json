@@ -1,6 +1,6 @@
 {
-  "version": "1.1.1",
+  "version": "1.2.0",
   "download_url": "https://github.com/Starmarine06/AIAssistant/releases/latest/download/bot.exe",
   "download_py_url": "https://raw.githubusercontent.com/Starmarine06/AIAssistant/main/bot.py",
-  "release_notes": "Added full Linux/POSIX compatibility, unified bash installer, and credentials bundling."
+  "release_notes": "Added the promo-video skill (agent recipe + on-demand bot render/send via Telegram) and embedded the 60s promo as an inline autoplay video in the README."
 }
