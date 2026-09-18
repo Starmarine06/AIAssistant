@@ -42,3 +42,7 @@ contacts.json
 # Packaging
 pip-wheel-metadata/
 *.egg-info/
+
+# Promo build artifacts
+AIAssistant-Linux.tar.gz
+.freebuff/
