@@ -1,0 +1,17 @@
+{
+    "description": "Render the AI Assistant promotional video with Remotion and send it to the user as a video in Telegram. Renders the 60-second 'Promo-Landscape' (1920x1080) or 'Promo-Portrait' (1080x1920) composition and optionally muxes the 60s music bed. Takes a minute or two. 'variant' defaults to landscape. Pass 'project_path' only if the promo-video project folder cannot be auto-detected.",
+    "parameters": {
+        "variant": {
+            "type": "string",
+            "description": "Optional. Orientation of the promo video: 'landscape' (1920x1080, default) or 'portrait' (1080x1920)."
+        },
+        "with_music": {
+            "type": "boolean",
+            "description": "Optional. Whether to mux the music bed (audio/music-mix.mp3) into the final video. Defaults to true when the music file exists."
+        },
+        "project_path": {
+            "type": "string",
+            "description": "Optional. Absolute path to the promo-video project directory (the folder containing promo-video/package.json). Usually auto-detected; only needed when the project is not in a standard location."
+        }
+    }
+}
