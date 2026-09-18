@@ -1,7 +1,7 @@
 # AI Assistant
 
-<p align="center" width="100%">
-<video src="https://github.com/user-attachments/assets/ae858151-cdcf-460c-bbfe-1b32e27a3f3d" width="80%" controls></video>
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/ae858151-cdcf-460c-bbfe-1b32e27a3f3d" poster="https://raw.githubusercontent.com/Starmarine06/AIAssistant/main/promo-video/assets/promo-poster.png" width="70%" autoplay loop muted playsinline></video>
 </p>
 
 AI Assistant is a Windows-based personal assistant that runs a Telegram bot and system tray application. Powered by an LLM via NVIDIA's API, it allows you to control your PC, run macros, schedule tasks, and integrate with Google Calendar and WhatsApp.
