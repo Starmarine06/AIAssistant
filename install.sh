@@ -6,8 +6,13 @@ echo "=== AI Assistant Linux Installer ==="
 # 1. Install system dependencies if apt is available
 if [ -x "$(command -v apt-get)" ]; then
     echo "Installing system dependencies via apt..."
-    sudo apt-get update
-    sudo apt-get install -y xclip xdotool scrot python3-tk python3-pip python3-venv plocate fd-find grim gnome-screenshot
+    if sudo -n apt-get update 2>/dev/null && sudo -n apt-get install -y xclip xdotool scrot python3-tk python3-pip python3-venv plocate fd-find grim gnome-screenshot 2>/dev/null; then
+        echo "System dependencies installed successfully."
+    else
+        echo "Warning: Could not install system dependencies (sudo may require a password)."
+        echo "Please run the following manually with sudo:"
+        echo "  sudo apt-get update && sudo apt-get install -y xclip xdotool scrot python3-tk python3-pip python3-venv plocate fd-find grim gnome-screenshot"
+    fi
 else
     echo "Warning: Package manager 'apt-get' not found."
     echo "Please ensure xclip, xdotool, scrot, python3-tk, plocate, fd, grim, and gnome-screenshot are installed on your system."

@@ -1,6 +1,5 @@
 import os
 import json
-import shutil
 import time
 import threading
 import uuid

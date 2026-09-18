@@ -80,7 +80,6 @@ def run_command(command_list):
         command_list, 
         stdout=subprocess.PIPE, 
         stderr=subprocess.STDOUT, 
-        shell=True,
         text=True,
         bufsize=1,
         universal_newlines=True
@@ -118,6 +117,7 @@ def build():
         f"--icon={icon_path}",
         "--collect-all", "customtkinter",
         "--add-data", f"custom_skills{sep}custom_skills",
+        "--add-data", f"version.json{sep}.",
         f"--name=bot",
         "bot.py"
     ]

@@ -166,7 +166,23 @@ async def schedule_reminder(reminder, bot):
         logging.error(f"Error sending reminder message: {e}")
 
 # ─── UPDATE SYSTEM ────────────────────────────────────
-VERSION = "1.0.0"
+def get_local_version():
+    """Read the version from the local version.json file."""
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        version_path = os.path.join(meipass, "version.json")
+    else:
+        version_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.json")
+    if os.path.exists(version_path):
+        try:
+            with open(version_path, "r") as f:
+                data = json.load(f)
+            return data.get("version", "1.0.0")
+        except Exception:
+            pass
+    return "1.0.0"
+
+VERSION = get_local_version()
 
 def is_newer_version(current, remote):
     try:
