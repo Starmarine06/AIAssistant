@@ -1,6 +1,6 @@
 {
-  "version": "1.3.1",
+  "version": "1.4.0",
   "download_url": "https://github.com/Starmarine06/AIAssistant/releases/latest/download/bot.exe",
   "download_py_url": "https://raw.githubusercontent.com/Starmarine06/AIAssistant/main/bot.py",
-  "release_notes": "Fixed a crash (No module named '_overlapped') when the bot restarted or updated itself. Includes Claude Code control from Telegram (/claude) and NVIDIA / Groq / OpenRouter provider switching (/provider, /model)."
+  "release_notes": "Added the plan workflow: set a project folder with /project, send a plan.md, then critique it, design it and implement it with Claude Code from Telegram."
 }

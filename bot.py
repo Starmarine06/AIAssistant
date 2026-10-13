@@ -1820,7 +1820,24 @@ Today's date is: {today}
 """
     return prompt
 
+def parse_pythonic_tool_call(reply):
+    """Some models answer with `<|tool_call_start|>[skill(a='x', b=1)]<|tool_call_end|>` instead of JSON."""
+    import ast
+    clean = re.sub(r'<\|[^|>]*\|>', '', reply).strip()
+    m = re.fullmatch(r'\[?\s*([A-Za-z_]\w*)\((.*)\)\s*\]?', clean, re.DOTALL)
+    if not m:
+        return None
+    try:
+        call = ast.parse(f"f({m.group(2)})", mode="eval").body
+        params = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords if kw.arg}
+    except Exception:
+        return None
+    return {"skill": m.group(1), "parameters": params}
+
 def parse_json_response(reply):
+    pythonic = parse_pythonic_tool_call(reply)
+    if pythonic:
+        return pythonic
     clean = reply.strip()
     if clean.startswith("```"):
         match = re.search(r'```(?:json)?\s*(.*?)\s*```', clean, re.DOTALL)
@@ -2161,6 +2178,12 @@ async def execute_skill(skill_name, parameters, update, context):
             return {"output": "Error: Missing parameter 'phone' or 'message'.", "feed_back_to_ai": True}
             
         phone_clean = re.sub(r'[^\d+]', '', phone)
+        if not re.search(r'\d', phone):
+            # Not a number - treat it as a saved contact name
+            saved = load_contacts().get(phone.strip().lower())
+            if not saved:
+                return {"output": f"Error: no saved contact named '{phone}'. Ask the user for the phone number or to save the contact first.", "feed_back_to_ai": True}
+            phone_clean = re.sub(r'[^\d+]', '', saved)
         quoted_msg = urllib.parse.quote(message)
         
         web_url = f"https://web.whatsapp.com/send?phone={phone_clean}&text={quoted_msg}"
@@ -2758,7 +2781,7 @@ def _split_message(text, n=3900):
     text = text or "(no output)"
     return [text[i:i + n] for i in range(0, len(text), n)]
 
-async def run_claude_task(bot, chat_id, prompt, permission_mode=None):
+async def run_claude_task(bot, chat_id, prompt, permission_mode=None, save_as=None):
     """Run a Claude Code task and report progress/result back to Telegram."""
     status = await bot.send_message(chat_id, "🤖 Claude Code is working...")
     state = {"lines": [], "t": 0.0}
@@ -2784,6 +2807,16 @@ async def run_claude_task(bot, chat_id, prompt, permission_mode=None):
     for chunk in _split_message(body):
         await bot.send_message(chat_id, chunk)
 
+    if save_as and res["ok"] and res["text"]:
+        try:
+            target = os.path.join(project_dir(), save_as)
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(res["text"])
+            await bot.send_message(chat_id, f"💾 Saved to {target}",
+                                   reply_markup=plan_buttons(after=save_as))
+        except Exception as e:
+            await bot.send_message(chat_id, f"⚠️ Couldn't save {save_as}: {e}")
+
     if res.get("denials"):
         lines = []
         for d in res["denials"][:5]:
@@ -2795,10 +2828,10 @@ async def run_claude_task(bot, chat_id, prompt, permission_mode=None):
 
 _cc_tasks = set()
 
-def start_claude_task(bot, chat_id, prompt, permission_mode=None):
+def start_claude_task(bot, chat_id, prompt, permission_mode=None, save_as=None):
     if claude_bridge.is_running(chat_id):
         return False
-    task = asyncio.create_task(run_claude_task(bot, chat_id, prompt, permission_mode))
+    task = asyncio.create_task(run_claude_task(bot, chat_id, prompt, permission_mode, save_as))
     _cc_tasks.add(task)  # keep a reference so it isn't garbage-collected mid-run
     task.add_done_callback(_cc_tasks.discard)
     return True
@@ -2869,6 +2902,141 @@ async def claude_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not start_claude_task(context.bot, chat_id, prompt, "bypassPermissions"):
         await context.bot.send_message(chat_id, "⏳ A task is already running.")
 
+# ─── PROJECT + PLAN WORKFLOW ───────────────────────────
+PLAN_REVIEW = "plan-review.md"
+PLAN_DESIGN = "plan-design.md"
+PLAN_PROGRESS = "PROGRESS.md"
+
+def project_dir():
+    d = llm_providers.cfg_read().get("project_dir")
+    return d if d and os.path.isdir(d) else None
+
+def plan_file():
+    """Path of the saved plan in the project folder, or None."""
+    d = project_dir()
+    name = llm_providers.cfg_read().get("plan_file") or "plan.md"
+    path = os.path.join(d, name) if d else None
+    return path if path and os.path.exists(path) else None
+
+def plan_buttons(after=None):
+    rows = [[InlineKeyboardButton("🧐 Critique", callback_data="plan_review"),
+             InlineKeyboardButton("🗺 Design", callback_data="plan_design")],
+            [InlineKeyboardButton("🚀 Implement", callback_data="plan_implement")]]
+    return InlineKeyboardMarkup(rows)
+
+def plan_prompt(action, extra=""):
+    plan = os.path.basename(plan_file())
+    ctx = []
+    if os.path.exists(os.path.join(project_dir(), PLAN_REVIEW)):
+        ctx.append(PLAN_REVIEW)
+    if os.path.exists(os.path.join(project_dir(), PLAN_DESIGN)):
+        ctx.append(PLAN_DESIGN)
+    extra = f"\n\nExtra instructions from the user: {extra}" if extra else ""
+    if action == "review":
+        body = (f"Read {plan} in this project. Give a constructive critique: gaps and missing requirements, "
+                "ambiguities, risks, questionable technical choices, scope or ordering problems, and what is "
+                "hard to test. Rank issues by severity, be specific, and for each propose a concrete improvement. "
+                "Also say what is already good. Do not write any code. Reply with the review as markdown.")
+    elif action == "design":
+        body = (f"Read {plan}" + (f" and {', '.join(ctx)}" if ctx else "") + " in this project and inspect any existing code. "
+                "Produce a detailed implementation design as markdown: architecture and components, file/folder "
+                "structure, data models and interfaces, key decisions with trade-offs, how it will be tested, and an "
+                "ordered milestone breakdown as a checklist (- [ ] items). Address the critique if one exists. "
+                "Do not write code yet.")
+    else:
+        body = (f"Implement {plan} in this project" + (f", following {', '.join(ctx)}" if ctx else "") + ". "
+                f"Work milestone by milestone, run tests as you go, and keep a checklist of progress in {PLAN_PROGRESS}. "
+                "If something in the plan is unclear or conflicts, make the most reasonable choice and note it in "
+                f"{PLAN_PROGRESS}. Finish with a short summary of what was built, what is left, and how to run it.")
+    return body + extra
+
+def start_plan_action(bot, chat_id, action, extra=""):
+    """Returns an error string, or None if the task was started."""
+    if not project_dir():
+        return "No project folder set. Use /project <folder> first."
+    if not plan_file():
+        return "No plan saved yet. Send me a plan.md file."
+    if not claude_bridge.find_claude():
+        return "Claude Code CLI not found on this PC."
+    mode = "plan" if action in ("review", "design") else None
+    save_as = {"review": PLAN_REVIEW, "design": PLAN_DESIGN}.get(action)
+    if not start_claude_task(bot, chat_id, plan_prompt(action, extra), mode, save_as):
+        return "A Claude Code task is already running. /claude stop to cancel it."
+    return None
+
+async def project_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    arg = " ".join(context.args or []).strip()
+    if arg:
+        path = os.path.abspath(os.path.expandvars(os.path.expanduser(arg.strip('"'))))
+        try:
+            os.makedirs(path, exist_ok=True)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Can't use that folder: {e}")
+            return
+        # The project folder is also where Claude Code works; a new folder means a new session
+        llm_providers.cfg_update(project_dir=path, claude_cwd=path, claude_session_id=None)
+        await update.message.reply_text(f"📁 Project folder set:\n{path}\n\nSend me a plan.md and I'll save it there.")
+        return
+    d = project_dir()
+    pf = plan_file()
+    await update.message.reply_text(
+        f"📁 Project: {d or 'not set'}\n📝 Plan: {pf or 'none saved'}\n\n"
+        "/project <folder> — set (or create) the project folder\n"
+        "/plan — plan actions\n/plan show — send me the plan",
+        reply_markup=plan_buttons() if pf else None)
+
+async def plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    chat_id = update.effective_chat.id
+    args = context.args or []
+    sub = args[0].lower() if args else ""
+    if sub in ("review", "design", "implement"):
+        err = start_plan_action(context.bot, chat_id, sub, " ".join(args[1:]))
+        if err:
+            await update.message.reply_text(f"❌ {err}")
+        return
+    pf = plan_file()
+    if sub == "show":
+        if not pf:
+            await update.message.reply_text("No plan saved yet.")
+            return
+        with open(pf, "r", encoding="utf-8", errors="replace") as f:
+            for chunk in _split_message(f.read()):
+                await context.bot.send_message(chat_id, chunk)
+        return
+    await update.message.reply_text(
+        f"📝 Plan: {pf or 'none saved - send me a plan.md'}\n📁 Project: {project_dir() or 'not set (/project <folder>)'}\n\n"
+        "🧐 Critique — constructive review, saved to plan-review.md\n"
+        "🗺 Design — architecture + milestones, saved to plan-design.md\n"
+        "🚀 Implement — builds it in the project folder\n\n"
+        "Add instructions with e.g. /plan implement only milestone 1",
+        reply_markup=plan_buttons() if pf else None)
+
+async def plan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not _cb_authorized(query):
+        return
+    action = query.data[5:]
+    err = start_plan_action(context.bot, query.message.chat_id, action)
+    if err:
+        await context.bot.send_message(query.message.chat_id, f"❌ {err}")
+
+def save_plan_document(filename, data):
+    """Save an uploaded markdown plan into the project folder, backing up any previous one."""
+    d = project_dir()
+    target = os.path.join(d, filename)
+    if os.path.exists(target):
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        os.replace(target, os.path.join(d, f"{filename}.{stamp}.bak"))
+    with open(target, "wb") as f:
+        f.write(data)
+    llm_providers.cfg_update(plan_file=filename)
+    return target
+
 # ─── START HANDLER ─────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
@@ -2886,6 +3054,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 *Claude Code:*\n"
         "• '/claude fix the failing tests' — runs Claude Code on your PC\n"
         "• '/claude on' — send every message to Claude Code\n\n"
+        "📝 *Plans:* /project <folder>, then send a plan.md — I'll critique it, design it and implement it\n\n"
         "🧠 */provider* and */model* — switch NVIDIA / Groq / OpenRouter\n\n"
         "💬 Or just chat with me!",
         parse_mode="Markdown"
@@ -2992,6 +3161,22 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filename = doc.file_name
     file_size = doc.file_size
 
+    if filename and filename.lower().endswith((".md", ".markdown")) and file_size <= 2 * 1024 * 1024:
+        if project_dir():
+            try:
+                tg_file = await context.bot.get_file(doc.file_id)
+                data = bytes(await tg_file.download_as_bytearray())
+                target = save_plan_document(os.path.basename(filename), data)
+                await update.message.reply_text(
+                    f"📝 Plan saved to your project:\n{target}\n\nWhat should I do with it?",
+                    reply_markup=plan_buttons())
+            except Exception as e:
+                await update.message.reply_text(f"❌ Couldn't save the plan: {e}")
+            return
+        await update.message.reply_text(
+            "💡 Tip: set a project folder with /project <folder> and I'll save .md plans there "
+            "and can critique, design and implement them. Saving to Downloads this time.")
+
     # Telegram bot API limit is 20MB for downloads
     if file_size > 20 * 1024 * 1024:
         await update.message.reply_text(
@@ -3092,6 +3277,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("setkey", setkey_command))
     app.add_handler(CommandHandler("claude", claude_command))
+    app.add_handler(CommandHandler("project", project_command))
+    app.add_handler(CommandHandler("plan", plan_command))
+    app.add_handler(CallbackQueryHandler(plan_callback, pattern="^plan_"))
     app.add_handler(CallbackQueryHandler(provider_callback, pattern="^(prov_|orm_|orms_|orf_)"))
     app.add_handler(CallbackQueryHandler(claude_callback, pattern="^ccbypass$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
