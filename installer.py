@@ -387,7 +387,8 @@ class InstallerGUI(ctk.CTk):
             dest_exe = os.path.join(self.install_dir, "bot.exe")
             if os.path.exists(dest_exe):
                 try:
-                    subprocess.Popen([dest_exe], cwd=self.install_dir, start_new_session=True)
+                    subprocess.Popen([dest_exe], cwd=self.install_dir, start_new_session=True,
+                                     env={**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"})
                 except Exception as e:
                     print(f"Error launching app: {e}")
         
