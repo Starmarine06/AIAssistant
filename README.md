@@ -4,7 +4,7 @@
   <video src="https://github.com/user-attachments/assets/ae858151-cdcf-460c-bbfe-1b32e27a3f3d" poster="https://raw.githubusercontent.com/Starmarine06/AIAssistant/main/promo-video/assets/promo-poster.png" width="70%" autoplay loop muted playsinline></video>
 </p>
 
-AI Assistant is a Windows-based personal assistant that runs a Telegram bot and system tray application. Powered by an LLM via NVIDIA's API, it allows you to control your PC, run macros, schedule tasks, and integrate with Google Calendar and WhatsApp.
+AI Assistant is a Windows-based personal assistant that runs a Telegram bot and system tray application. Powered by an LLM via NVIDIA, Groq or OpenRouter, it allows you to control your PC, run macros, schedule tasks, and integrate with Google Calendar and WhatsApp.
 
 ---
 
@@ -26,6 +26,14 @@ AI Assistant is a Windows-based personal assistant that runs a Telegram bot and 
   - Background task scheduler supporting one-off and periodic interval tasks.
   - Custom reminders/timers with relative delays.
   - Local Address Book: Save contacts and send WhatsApp messages.
+- **Claude Code from Telegram**:
+  - `/claude <task>` runs Claude Code headlessly on your PC (needs the `claude` CLI installed and logged in), streams tool-call progress, and sends back the result. Follow-up tasks continue the same session.
+  - `/claude on` / `off` routes every message to Claude Code; `/claude cd <folder>`, `/claude mode <default|acceptEdits|plan|bypassPermissions>`, `/claude new`, `/claude stop`.
+  - Default permission mode is `acceptEdits`. If Claude Code is blocked from something (e.g. a shell command), the bot offers a one-tap "Re-run with full permissions" button.
+  - You can also just ask in plain language ("have Claude Code fix the tests in my project").
+- **Multiple LLM providers**:
+  - `/provider` switches between NVIDIA, Groq and OpenRouter; `/setkey <provider> <key>` stores a key (and deletes your message).
+  - With OpenRouter active, `/model [search]` lists all OpenRouter models (with a free-only filter) so you can pick one.
 - **Custom Skills**:
   - Dynamically register and run Python scripts to execute custom logic.
 - **Tray Icon & Settings GUI**:
@@ -61,7 +69,7 @@ python settings_gui.py
 ```
 This GUI allows you to enter:
 - **Telegram Bot Token** (obtain from `@BotFather`).
-- **NVIDIA API Key** (for LLM reasoning).
+- **NVIDIA, Groq and/or OpenRouter API Key** (at least one, for LLM reasoning).
 - **Google Calendar Credentials** (importing a `credentials.json` file from Google Cloud Console).
 
 #### 3. Start the Bot

@@ -95,8 +95,26 @@ class SettingsGUI(ctk.CTk):
         )
         self.nv_entry.pack(padx=40, pady=5)
         
+        gq_label = ctk.CTkLabel(tab1, text="Groq API Key (optional):", font=ctk.CTkFont(size=14, weight="bold"))
+        gq_label.pack(anchor="w", padx=40, pady=(10, 2))
+        self.gq_entry = ctk.CTkEntry(tab1, placeholder_text="Enter Groq API Key (gsk_...)", width=580, height=35, show="*")
+        self.gq_entry.pack(padx=40, pady=5)
+
+        or_label = ctk.CTkLabel(tab1, text="OpenRouter API Key (optional):", font=ctk.CTkFont(size=14, weight="bold"))
+        or_label.pack(anchor="w", padx=40, pady=(10, 2))
+        self.or_entry = ctk.CTkEntry(tab1, placeholder_text="Enter OpenRouter API Key (sk-or-...)", width=580, height=35, show="*")
+        self.or_entry.pack(padx=40, pady=5)
+
+        prov_frame = ctk.CTkFrame(tab1, fg_color="transparent")
+        prov_frame.pack(fill="x", padx=40, pady=(10, 0))
+        ctk.CTkLabel(prov_frame, text="Active provider:", font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        self.provider_menu = ctk.CTkOptionMenu(prov_frame, values=["nvidia", "groq", "openrouter"], width=160)
+        self.provider_menu.pack(side="left", padx=10)
+        ctk.CTkLabel(prov_frame, text="(OpenRouter model is chosen in Telegram with /model)",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(side="left")
+
         btn_frame = ctk.CTkFrame(tab1, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=40, pady=(40, 10))
+        btn_frame.pack(fill="x", padx=40, pady=(15, 10))
         
         self.status_label = ctk.CTkLabel(
             btn_frame, 
@@ -252,37 +270,54 @@ class SettingsGUI(ctk.CTk):
                 with open(self.config_path, "r") as f:
                     data = json.load(f)
                 self.tg_entry.insert(0, data.get("telegram_token", ""))
-                self.nv_entry.insert(0, data.get("nvidia_api_key", ""))
+                nv = data.get("nvidia_api_key", "")
+                # Older configs kept any provider's key here; show it under the right field
+                if nv.startswith("gsk_") and not data.get("groq_api_key"):
+                    self.gq_entry.insert(0, nv)
+                elif nv.startswith("sk-or-") and not data.get("openrouter_api_key"):
+                    self.or_entry.insert(0, nv)
+                else:
+                    self.nv_entry.insert(0, nv)
+                if data.get("groq_api_key"):
+                    self.gq_entry.insert(0, data["groq_api_key"])
+                if data.get("openrouter_api_key"):
+                    self.or_entry.insert(0, data["openrouter_api_key"])
+                if data.get("provider") in ("nvidia", "groq", "openrouter"):
+                    self.provider_menu.set(data["provider"])
             except Exception:
                 pass
 
     def save_config(self):
         tg_token = self.tg_entry.get().strip()
         nv_key = self.nv_entry.get().strip()
+        gq_key = self.gq_entry.get().strip()
+        or_key = self.or_entry.get().strip()
         
         if not tg_token:
             self.status_label.configure(text="❌ Telegram token is required")
             return
-        if not nv_key:
-            self.status_label.configure(text="❌ NVIDIA API key is required")
+        if not (nv_key or gq_key or or_key):
+            self.status_label.configure(text="❌ At least one API key (NVIDIA, Groq or OpenRouter) is required")
             return
             
         os.makedirs(self.config_dir, exist_ok=True)
                 
-        config_data = {
-            "telegram_token": tg_token,
-            "nvidia_api_key": nv_key,
-            "authorized_chat_id": None
-        }
+        config_data = {"authorized_chat_id": None}
         
+        # Start from the existing config so settings made in Telegram (model, Claude Code, chat id) survive
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, "r") as f:
-                    old_data = json.load(f)
-                if old_data.get("authorized_chat_id"):
-                    config_data["authorized_chat_id"] = old_data["authorized_chat_id"]
+                    config_data.update(json.load(f))
             except Exception:
                 pass
+        config_data.update({
+            "telegram_token": tg_token,
+            "nvidia_api_key": nv_key,
+            "groq_api_key": gq_key,
+            "openrouter_api_key": or_key,
+            "provider": self.provider_menu.get(),
+        })
                 
         try:
             with open(self.config_path, "w") as f:
