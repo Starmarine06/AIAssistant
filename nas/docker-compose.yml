@@ -1,0 +1,24 @@
+# TrueNAS SCALE: Apps -> Discover Apps -> Custom App -> "Install via YAML", paste this file.
+# Replace the <...> values. Create the two datasets first (see nas/README.md).
+services:
+  ai-assistant:
+    image: ghcr.io/starmarine06/aiassistant-nas:latest
+    container_name: ai-assistant
+    restart: unless-stopped
+    user: "568:568"
+    environment:
+      TELEGRAM_TOKEN: "<telegram bot token from @BotFather>"
+      AUTHORIZED_CHAT_ID: "<your numeric telegram user id>"   # strongly recommended
+      CLAUDE_CODE_OAUTH_TOKEN: "<output of `claude setup-token`>"
+      GH_TOKEN: "<GitHub token with repo scope>"
+      # Optional chat model keys (any one is enough; Claude Code does not need them)
+      NVIDIA_API_KEY: ""
+      GROQ_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      GITHUB_SYNC: "1"
+      # CLAUDE_PERMISSION_MODE: "bypassPermissions"   # or acceptEdits for a stricter container
+      # GITHUB_OWNER: "<org name>"                     # default: the token's own account
+      # GIT_USER_NAME / GIT_USER_EMAIL                 # default: your GitHub noreply identity
+    volumes:
+      - /mnt/<pool>/apps/ai-assistant/data:/data
+      - /mnt/<pool>/apps/ai-assistant/projects:/projects
