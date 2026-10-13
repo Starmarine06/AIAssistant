@@ -1,6 +1,6 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "download_url": "https://github.com/Starmarine06/AIAssistant/releases/latest/download/bot.exe",
   "download_py_url": "https://raw.githubusercontent.com/Starmarine06/AIAssistant/main/bot.py",
-  "release_notes": "Added the promo-video skill (agent recipe + on-demand bot render/send via Telegram) and embedded the 60s promo as an inline autoplay video in the README."
+  "release_notes": "Added Claude Code control from Telegram (/claude), multi-provider LLM support (NVIDIA, Groq, OpenRouter with /provider and /model), and fixed the version fallback that caused repeated update prompts."
 }

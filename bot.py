@@ -20,6 +20,10 @@ else:
     CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
+import llm_providers
+import claude_bridge
+llm_providers.init(CONFIG_DIR)
+
 # Ensure working directory is correct when not packaged
 if not getattr(sys, 'frozen', False):
     os.chdir(CONFIG_DIR)
@@ -177,15 +181,17 @@ def get_local_version():
         try:
             with open(version_path, "r") as f:
                 data = json.load(f)
-            return data.get("version", "1.0.0")
+            return data.get("version", "unknown")
         except Exception:
             pass
-    return "1.0.0"
+    return "unknown"
 
 VERSION = get_local_version()
 
 def is_newer_version(current, remote):
     try:
+        if current == "unknown":
+            return True
         c_parts = [int(x) for x in current.strip('v').split('.')]
         r_parts = [int(x) for x in remote.strip('v').split('.')]
         return r_parts > c_parts
@@ -436,45 +442,8 @@ calendar_service = None
 
 # ─── NVIDIA TEXT CALL ──────────────────────────────────
 def call_nvidia(messages, model=None):
-    headers = {
-        "Authorization": f"Bearer {NVIDIA_API_KEY}",
-        "Accept": "text/event-stream",
-    }
-    
-    url = "https://integrate.api.nvidia.com/v1/chat/completions"
-    default_model = "meta/llama-3.3-70b-instruct"
-    if NVIDIA_API_KEY and NVIDIA_API_KEY.startswith("gsk_"):
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        default_model = "llama-3.3-70b-versatile"
-        
-    payload = {
-        "model": model or default_model,
-        "messages": messages,
-        "max_tokens": 1024,
-        "temperature": 0.7,
-        "top_p": 1.00,
-        "stream": True,
-    }
-    response = requests.post(url, headers=headers, json=payload, stream=True, timeout=15)
-    response.raise_for_status()
-
-    full_text = ""
-    for line in response.iter_lines():
-        if not line:
-            continue
-        decoded = line.decode("utf-8")
-        if decoded.startswith("data: "):
-            decoded = decoded[6:]
-        if decoded == "[DONE]":
-            break
-        try:
-            chunk = json.loads(decoded)
-            delta = chunk["choices"][0]["delta"]
-            full_text += delta.get("content", "")
-        except (json.JSONDecodeError, KeyError, IndexError):
-            continue
-
-    return full_text.strip()
+    """Chat completion via the active provider (NVIDIA, Groq or OpenRouter). Name kept for compatibility."""
+    return llm_providers.chat_completion(messages)
 
 # ─── VISION: ANALYZE IMAGE WITH AI ──────────────────────
 def analyze_image_with_vision(image_bytes, caption=""):
@@ -536,45 +505,7 @@ Rules:
         }
     ]
 
-    headers = {
-        "Authorization": f"Bearer {NVIDIA_API_KEY}",
-        "Accept": "text/event-stream",
-    }
-    
-    url = "https://integrate.api.nvidia.com/v1/chat/completions"
-    vision_model = "meta/llama-3.2-90b-vision-instruct"
-    if NVIDIA_API_KEY and NVIDIA_API_KEY.startswith("gsk_"):
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        vision_model = "llama-3.2-90b-vision-preview"
-        
-    payload = {
-        "model": vision_model,
-        "messages": messages,
-        "max_tokens": 1024,
-        "temperature": 0.2,
-        "stream": True,
-    }
-
-    response = requests.post(url, headers=headers, json=payload, stream=True, timeout=15)
-    response.raise_for_status()
-
-    full_text = ""
-    for line in response.iter_lines():
-        if not line:
-            continue
-        decoded = line.decode("utf-8")
-        if decoded.startswith("data: "):
-            decoded = decoded[6:]
-        if decoded == "[DONE]":
-            break
-        try:
-            chunk = json.loads(decoded)
-            delta = chunk["choices"][0]["delta"]
-            full_text += delta.get("content", "")
-        except (json.JSONDecodeError, KeyError, IndexError):
-            continue
-
-    return full_text.strip()
+    return llm_providers.chat_completion(messages, vision=True, temperature=0.2)
 
 # ─── GOOGLE CALENDAR ───────────────────────────────────
 def init_calendar():
@@ -1873,6 +1804,9 @@ List of available built-in skills:
 25. run_macro: Play back a recorded mouse and keyboard macro.
     - macro_name (string): The name of the macro to replay (e.g. "my_macro").
 
+26. claude_code: Hand a coding / software-engineering / project task to Claude Code, the autonomous coding agent installed on this PC. Use it when the user asks to build, fix, refactor, debug, review, or investigate code or a project, or explicitly mentions Claude Code. It works in the background and reports back by itself.
+    - prompt (string): The full task for Claude Code, written as a self-contained instruction.
+
 {custom_skills_text}{contacts_text}
 Today's date is: {today}
 """
@@ -1908,6 +1842,15 @@ async def execute_skill(skill_name, parameters, update, context):
         res = open_app_or_website(target)
         return {"output": res, "feed_back_to_ai": True}
         
+    elif skill_name == "claude_code":
+        task = parameters.get("prompt")
+        if not task:
+            return {"output": "Error: Missing parameter 'prompt'.", "feed_back_to_ai": True}
+        chat_id = update.effective_chat.id
+        if not start_claude_task(context.bot, chat_id, task):
+            await context.bot.send_message(chat_id, "⏳ Claude Code is still working. /claude stop to cancel.")
+        return {"output": "Claude Code task started.", "feed_back_to_ai": False}
+
     elif skill_name == "lock_pc":
         if sys.platform == 'win32':
             import ctypes
@@ -2579,6 +2522,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user_msg = update.message.text
 
+    if claude_bridge.get_settings()["chat_mode"]:
+        if not start_claude_task(context.bot, update.effective_chat.id, user_msg):
+            await update.message.reply_text("⏳ Claude Code is still working. /claude stop to cancel.")
+        return
+
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action="typing"
     )
@@ -2650,6 +2598,269 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time.sleep(2)
         restart_bot()
 
+# ─── PROVIDER / MODEL SELECTION ────────────────────────
+OR_PAGE_SIZE = 8
+
+def _cb_authorized(query):
+    return AUTHORIZED_CHAT_ID is not None and query.from_user.id == AUTHORIZED_CHAT_ID
+
+def provider_menu():
+    cfg = llm_providers.cfg_read()
+    active, _ = llm_providers.get_active(cfg)
+    rows = []
+    for p, info in llm_providers.PROVIDERS.items():
+        mark = "✅ " if p == active else ""
+        no_key = "" if llm_providers.get_key(p, cfg) else " (no key)"
+        rows.append([InlineKeyboardButton(f"{mark}{info['label']}{no_key}", callback_data=f"prov_{p}")])
+    if llm_providers.get_key("openrouter", cfg):
+        rows.append([InlineKeyboardButton("🔀 Choose OpenRouter model", callback_data="orm_0")])
+    text = (f"🧠 Active: {llm_providers.describe_active()}\n\n"
+            "Tap a provider to switch. Add a key with:\n/setkey <nvidia|groq|openrouter> <key>")
+    return text, InlineKeyboardMarkup(rows)
+
+async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    text, markup = provider_menu()
+    await update.message.reply_text(text, reply_markup=markup)
+
+async def setkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    args = context.args or []
+    if len(args) != 2 or args[0].lower() not in llm_providers.PROVIDERS:
+        await update.message.reply_text("Usage: /setkey <nvidia|groq|openrouter> <api key>")
+        return
+    provider, key = args[0].lower(), args[1].strip()
+    try:
+        await update.message.delete()  # don't leave the key sitting in chat history
+    except Exception:
+        pass
+    cfg = llm_providers.cfg_read()
+    updates = {f"{provider}_api_key": key}
+    if not cfg.get("provider") or not llm_providers.get_key(cfg.get("provider"), cfg):
+        updates["provider"] = provider
+    llm_providers.cfg_update(**updates)
+    await context.bot.send_message(update.effective_chat.id,
+                                   f"🔑 {llm_providers.PROVIDERS[provider]['label']} key saved (your message was deleted).\n"
+                                   f"Active: {llm_providers.describe_active()}")
+
+def _or_view(ud):
+    models = llm_providers.list_openrouter_models()
+    q = (ud.get("or_query") or "").lower()
+    free = ud.get("or_free", False)
+    found = [m for m in models if (not free or m["free"]) and (q in m["id"].lower() or q in m["name"].lower())]
+    ud["or_list"] = [m["id"] for m in found]
+    return found
+
+def or_render(ud, page):
+    found = _or_view(ud)
+    pages = max(1, (len(found) + OR_PAGE_SIZE - 1) // OR_PAGE_SIZE)
+    page = min(max(page, 0), pages - 1)
+    current = llm_providers.get_model("openrouter")
+    rows = []
+    for i in range(page * OR_PAGE_SIZE, min(len(found), (page + 1) * OR_PAGE_SIZE)):
+        m = found[i]
+        label = ("✅ " if m["id"] == current else "") + ("🆓 " if m["free"] else "") + m["id"]
+        rows.append([InlineKeyboardButton(label[:60], callback_data=f"orms_{i}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀", callback_data=f"orm_{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="orm_noop"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("▶", callback_data=f"orm_{page+1}"))
+    rows.append(nav)
+    free = ud.get("or_free", False)
+    rows.append([InlineKeyboardButton("Show all" if free else "🆓 Free only", callback_data=f"orf_{0 if free else 1}")])
+    filt = f' matching "{ud["or_query"]}"' if ud.get("or_query") else ""
+    text = (f"🔀 OpenRouter models{filt}: {len(found)} found\nCurrent: {current}\n"
+            "Search with /model <text> (e.g. /model claude).")
+    return text, InlineKeyboardMarkup(rows)
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    provider, _ = llm_providers.get_active()
+    if provider != "openrouter":
+        await update.message.reply_text(
+            f"Model selection is only available on OpenRouter. Active: {llm_providers.describe_active()}\n"
+            "Use /provider to switch.")
+        return
+    context.user_data["or_query"] = " ".join(context.args or [])
+    context.user_data["or_free"] = False
+    try:
+        text, markup = or_render(context.user_data, 0)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Couldn't fetch OpenRouter models: {e}")
+        return
+    await update.message.reply_text(text, reply_markup=markup)
+
+async def provider_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not _cb_authorized(query):
+        await query.answer()
+        return
+    data = query.data
+    if data == "orm_noop":
+        await query.answer()
+        return
+    if data.startswith("prov_"):
+        provider = data[5:]
+        if provider not in llm_providers.PROVIDERS or not llm_providers.get_key(provider):
+            await query.answer("No API key for that provider. Use /setkey.", show_alert=True)
+            return
+        llm_providers.cfg_update(provider=provider)
+        await query.answer(f"Switched to {llm_providers.PROVIDERS[provider]['label']}")
+        if provider == "openrouter":
+            context.user_data["or_query"], context.user_data["or_free"] = "", False
+            try:
+                text, markup = or_render(context.user_data, 0)
+                await query.edit_message_text(text, reply_markup=markup)
+                return
+            except Exception as e:
+                logging.error(f"OpenRouter model list failed: {e}")
+        text, markup = provider_menu()
+        await query.edit_message_text(text, reply_markup=markup)
+        return
+    await query.answer()
+    try:
+        if data.startswith("orms_"):
+            idx = int(data[5:])
+            ids = context.user_data.get("or_list") or []
+            if idx >= len(ids):
+                await query.edit_message_text("Session expired. Run /model again.")
+                return
+            llm_providers.cfg_update(openrouter_model=ids[idx], provider="openrouter")
+            await query.edit_message_text(f"✅ Model set: {ids[idx]}\nActive: {llm_providers.describe_active()}")
+            return
+        if data.startswith("orf_"):
+            context.user_data["or_free"] = data[4:] == "1"
+            page = 0
+        else:
+            page = int(data[4:])
+        text, markup = or_render(context.user_data, page)
+        await query.edit_message_text(text, reply_markup=markup)
+    except Exception as e:
+        logging.error(f"Model picker error: {e}")
+
+# ─── CLAUDE CODE BRIDGE ────────────────────────────────
+cc_last_prompt = {}
+
+def _split_message(text, n=3900):
+    text = text or "(no output)"
+    return [text[i:i + n] for i in range(0, len(text), n)]
+
+async def run_claude_task(bot, chat_id, prompt, permission_mode=None):
+    """Run a Claude Code task and report progress/result back to Telegram."""
+    status = await bot.send_message(chat_id, "🤖 Claude Code is working...")
+    state = {"lines": [], "t": 0.0}
+
+    async def progress(line):
+        state["lines"].append(line)
+        if time.time() - state["t"] >= 3:
+            state["t"] = time.time()
+            await status.edit_text("🤖 Claude Code is working...\n" + "\n".join(state["lines"][-6:]))
+
+    cc_last_prompt[chat_id] = prompt
+    res = await claude_bridge.run(chat_id, prompt, progress, permission_mode)
+
+    footer = ""
+    if res.get("turns") is not None:
+        footer = f"{res['turns']} turns" + (f" · ${res['cost']:.2f}" if res.get("cost") else "")
+    try:
+        await status.edit_text(("✅ Claude Code finished" if res["ok"] else "⚠️ Claude Code stopped") + (f" ({footer})" if footer else ""))
+    except Exception:
+        pass
+
+    body = res["text"] if res["text"] else f"❌ {res.get('error')}"
+    for chunk in _split_message(body):
+        await bot.send_message(chat_id, chunk)
+
+    if res.get("denials"):
+        lines = []
+        for d in res["denials"][:5]:
+            inp = d.get("tool_input") or {}
+            detail = str(inp.get("command") or inp.get("file_path") or "")[:80]
+            lines.append(f"• {d.get('tool_name')}: {detail}")
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔓 Re-run with full permissions", callback_data="ccbypass")]])
+        await bot.send_message(chat_id, "🔒 Claude Code was blocked from:\n" + "\n".join(lines), reply_markup=keyboard)
+
+_cc_tasks = set()
+
+def start_claude_task(bot, chat_id, prompt, permission_mode=None):
+    if claude_bridge.is_running(chat_id):
+        return False
+    task = asyncio.create_task(run_claude_task(bot, chat_id, prompt, permission_mode))
+    _cc_tasks.add(task)  # keep a reference so it isn't garbage-collected mid-run
+    task.add_done_callback(_cc_tasks.discard)
+    return True
+
+async def claude_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
+    chat_id = update.effective_chat.id
+    args = context.args or []
+    sub = args[0].lower() if args else ""
+    s = claude_bridge.get_settings()
+
+    if not args:
+        found = claude_bridge.find_claude()
+        await update.message.reply_text(
+            "🤖 Claude Code bridge\n"
+            f"CLI: {found or 'NOT FOUND'}\n"
+            f"Folder: {s['cwd']}\n"
+            f"Permissions: {s['mode']}\n"
+            f"Session: {'continuing ' + s['session_id'][:8] if s['session_id'] else 'new'}\n"
+            f"Chat mode: {'ON (every message goes to Claude Code)' if s['chat_mode'] else 'off'}\n\n"
+            "/claude <task> — run a task\n"
+            "/claude on | off — route all messages to Claude Code\n"
+            "/claude cd <folder> — set working folder\n"
+            "/claude mode <default|acceptEdits|plan|bypassPermissions>\n"
+            "/claude new — start a fresh session\n"
+            "/claude stop — cancel the running task")
+    elif sub == "stop":
+        stopped = await claude_bridge.stop(chat_id)
+        await update.message.reply_text("🛑 Stopping Claude Code..." if stopped else "Nothing is running.")
+    elif sub == "new":
+        llm_providers.cfg_update(claude_session_id=None)
+        await update.message.reply_text("🆕 Next task starts a fresh Claude Code session.")
+    elif sub in ("on", "off"):
+        llm_providers.cfg_update(claude_chat_mode=(sub == "on"))
+        await update.message.reply_text("💬 Chat mode ON — your messages now go straight to Claude Code. /claude off to return."
+                                        if sub == "on" else "💬 Chat mode off.")
+    elif sub == "cd":
+        path = os.path.abspath(os.path.expandvars(os.path.expanduser(" ".join(args[1:]))))
+        if len(args) < 2 or not os.path.isdir(path):
+            await update.message.reply_text(f"❌ Not a folder: {path if len(args) > 1 else '(none given)'}")
+        else:
+            llm_providers.cfg_update(claude_cwd=path, claude_session_id=None)
+            await update.message.reply_text(f"📁 Working folder: {path}\n(new session)")
+    elif sub == "mode":
+        mode = args[1] if len(args) > 1 else ""
+        if mode not in claude_bridge.PERMISSION_MODES:
+            await update.message.reply_text("Modes: " + ", ".join(claude_bridge.PERMISSION_MODES))
+        else:
+            llm_providers.cfg_update(claude_permission_mode=mode)
+            warn = "\n⚠️ Claude Code can run any command without asking." if mode == "bypassPermissions" else ""
+            await update.message.reply_text(f"🔐 Permission mode: {mode}{warn}")
+    else:
+        if not start_claude_task(context.bot, chat_id, " ".join(args)):
+            await update.message.reply_text("⏳ A task is already running. /claude stop to cancel it.")
+
+async def claude_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not _cb_authorized(query):
+        return
+    chat_id = query.message.chat_id
+    prompt = cc_last_prompt.get(chat_id)
+    if not prompt:
+        await query.edit_message_text("Nothing to re-run.")
+        return
+    await query.edit_message_text("🔓 Re-running with full permissions...")
+    if not start_claude_task(context.bot, chat_id, prompt, "bypassPermissions"):
+        await context.bot.send_message(chat_id, "⏳ A task is already running.")
+
 # ─── START HANDLER ─────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
@@ -2664,6 +2875,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 'Find resume.pdf'\n\n"
         "📅 *Calendar:*\n"
         "• 'Dentist this Friday at 3pm'\n\n"
+        "🤖 *Claude Code:*\n"
+        "• '/claude fix the failing tests' — runs Claude Code on your PC\n"
+        "• '/claude on' — send every message to Claude Code\n\n"
+        "🧠 */provider* and */model* — switch NVIDIA / Groq / OpenRouter\n\n"
         "💬 Or just chat with me!",
         parse_mode="Markdown"
     )
@@ -2852,7 +3067,7 @@ if __name__ == "__main__":
     tray_thread.start()
 
     # Start the bot
-    if not TELEGRAM_TOKEN or not NVIDIA_API_KEY:
+    if not TELEGRAM_TOKEN or not llm_providers.has_any_key():
         logging.error("Configuration missing. Exiting.")
         sys.exit(1)
         
@@ -2865,6 +3080,12 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(reminder_callback, pattern="^remcal_"))
     app.add_handler(CommandHandler("checkupdate", check_update_command))
     app.add_handler(CallbackQueryHandler(update_callback, pattern="^update_bot$"))
+    app.add_handler(CommandHandler("provider", provider_command))
+    app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler("setkey", setkey_command))
+    app.add_handler(CommandHandler("claude", claude_command))
+    app.add_handler(CallbackQueryHandler(provider_callback, pattern="^(prov_|orm_|orms_|orf_)"))
+    app.add_handler(CallbackQueryHandler(claude_callback, pattern="^ccbypass$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
