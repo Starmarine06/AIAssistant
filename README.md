@@ -35,6 +35,8 @@ AI Assistant is a Windows-based personal assistant that runs a Telegram bot and 
   - `/project <folder>` sets (and creates, if needed) the project folder. Claude Code also works in this folder.
   - Send a `plan.md` (any `.md` file) to the bot and it is saved into the project folder; an existing plan is backed up as `plan.md.<timestamp>.bak`.
   - Buttons (or `/plan review|design|implement [extra instructions]`): **Critique** gives a ranked, constructive review saved to `plan-review.md`; **Design** produces architecture and a milestone checklist saved to `plan-design.md`; **Implement** builds it in the project folder, tracking progress in `PROGRESS.md`. Critique and Design run in Claude Code's read-only plan mode. `/plan show` sends the plan back to you.
+- **GitHub sync** (`/github on|off`): after each successful Claude Code task the project folder is committed and pushed to its own private GitHub repo (`<you>/<folder-name>`, created on first sync with a safe default `.gitignore`). Needs `git` and the `gh` CLI signed in. Off by default on Windows, on by default in the NAS container.
+- **TrueNAS / Docker headless agent**: `nas_bot.py` + `Dockerfile.nas` run the Telegram → Claude Code → GitHub workflow on a home server, one repo per project. See [nas/README.md](nas/README.md).
 - **Multiple LLM providers**:
   - `/provider` switches between NVIDIA, Groq and OpenRouter; `/setkey <provider> <key>` stores a key (and deletes your message).
   - With OpenRouter active, `/model [search]` lists all OpenRouter models (with a free-only filter) so you can pick one.
