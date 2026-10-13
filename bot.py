@@ -169,6 +169,14 @@ async def schedule_reminder(reminder, bot):
     except Exception as e:
         logging.error(f"Error sending reminder message: {e}")
 
+# A onefile PyInstaller app that relaunches itself must reset the bootloader environment,
+# otherwise the child reuses the parent's temp folder, which is deleted when the parent exits
+# (-> "No module named '_overlapped'").
+def relaunch_env():
+    env = os.environ.copy()
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
 # ─── UPDATE SYSTEM ────────────────────────────────────
 def get_local_version():
     """Read the version from the local version.json file."""
@@ -334,7 +342,7 @@ async def update_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.rename(new_filepath, current_filepath)
         
         if is_frozen:
-            subprocess.Popen([current_filepath] + sys.argv[1:], cwd=exe_dir, start_new_session=True)
+            subprocess.Popen([current_filepath] + sys.argv[1:], cwd=exe_dir, start_new_session=True, env=relaunch_env())
         else:
             subprocess.Popen([sys.executable, current_filepath] + sys.argv[1:], cwd=exe_dir, start_new_session=True)
             
@@ -3054,7 +3062,7 @@ def cleanup_old_version():
 def restart_bot():
     logging.info("Restarting bot process...")
     if getattr(sys, 'frozen', False):
-        subprocess.Popen([sys.executable] + sys.argv[1:])
+        subprocess.Popen([sys.executable] + sys.argv[1:], env=relaunch_env())
     else:
         subprocess.Popen([sys.executable, __file__] + sys.argv[1:])
     os._exit(0)
