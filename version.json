@@ -1,6 +1,6 @@
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "download_url": "https://github.com/Starmarine06/AIAssistant/releases/latest/download/bot.exe",
   "download_py_url": "https://raw.githubusercontent.com/Starmarine06/AIAssistant/main/bot.py",
-  "release_notes": "Added GitHub sync (one private repo per project, /github), a headless TrueNAS/Docker project agent, shared handler refactor, and fixes: models that reply with tool-call syntax no longer leak raw text, and WhatsApp contacts resolve by name."
+  "release_notes": "Removed the Telegram unlock feature: Windows blocks apps from typing on the lock screen, so it never reliably worked. Lock still works. Use a remote-desktop tool (Chrome Remote Desktop, RustDesk) to unlock the PC instead."
 }
