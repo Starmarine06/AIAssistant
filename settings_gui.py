@@ -25,7 +25,7 @@ class SettingsGUI(ctk.CTk):
         
         # Window settings
         self.title("AI Assistant Control Center")
-        self.geometry("750x600")
+        self.geometry("760x720")
         self.resizable(False, False)
         
         # Center window on screen
@@ -34,7 +34,7 @@ class SettingsGUI(ctk.CTk):
         height = self.winfo_height()
         x = (self.winfo_screenwidth() // 2) - (width // 2)
         y = (self.winfo_screenheight() // 2) - (height // 2)
-        self.geometry(f'{750}x{600}+{x}+{y}')
+        self.geometry(f'{760}x{720}+{x}+{max(y, 0)}')
         
         self.setup_ui()
         self.load_existing_config()
@@ -62,7 +62,8 @@ class SettingsGUI(ctk.CTk):
         self.tabview.add("Macros & Scheduler")
         
         # --- TAB 1: System Config ---
-        tab1 = self.tabview.tab("System Config")
+        tab1 = ctk.CTkScrollableFrame(self.tabview.tab("System Config"), fg_color="transparent")  # scrolls if the window is short
+        tab1.pack(fill="both", expand=True)
         
         tg_label = ctk.CTkLabel(
             tab1, 

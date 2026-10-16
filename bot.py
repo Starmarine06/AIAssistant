@@ -1,4 +1,13 @@
+import sys as _sys
+if _sys.platform == "win32":
+    # Per-monitor DPI awareness (must happen before pyautogui is imported) so every display captures correctly.
+    try:
+        import ctypes as _ct
+        _ct.windll.user32.SetProcessDpiAwarenessContext(_ct.c_void_p(-4))
+    except Exception:
+        pass
 import os, json, logging, datetime, re, requests, subprocess, pyautogui, io, base64, time, asyncio, uuid, urllib.parse
+pyautogui.FAILSAFE = False  # the lock screen / remote use reports the cursor in a corner, which would abort every key press
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from googleapiclient.discovery import build
@@ -444,6 +453,7 @@ search_results = {}  # uid -> [filepath, ...]
 
 def escape_md(text):
     """Escape special characters for Telegram Markdown."""
+    text = "" if text is None else str(text)
     for ch in ('_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'):
         text = text.replace(ch, f'\\{ch}')
     return text
@@ -647,7 +657,7 @@ def command_exists(cmd):
     cmd_part = cmd.split()[0]
     return shutil.which(cmd_part) is not None
 
-def take_screenshot():
+def take_screenshot(monitor=None):
     if sys.platform != 'win32' and os.environ.get("WAYLAND_DISPLAY"):
         import tempfile
         temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -677,11 +687,47 @@ def take_screenshot():
             except Exception:
                 pass
 
-    screenshot = pyautogui.screenshot()
+    screenshot = grab_screen(monitor)
     img_bytes = io.BytesIO()
     screenshot.save(img_bytes, format="PNG")
     img_bytes.seek(0)
     return img_bytes
+
+def list_monitors():
+    """Return [(left, top, right, bottom), ...] for each display (Windows); empty elsewhere."""
+    if sys.platform != "win32":
+        return []
+    import ctypes
+    from ctypes import wintypes
+    rects = []
+    proc_t = ctypes.WINFUNCTYPE(ctypes.c_int, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    def cb(hmon, hdc, rect, lparam):
+        r = rect.contents
+        rects.append((r.left, r.top, r.right, r.bottom))
+        return 1
+    ctypes.windll.user32.EnumDisplayMonitors(0, 0, proc_t(cb), 0)
+    rects.sort(key=lambda r: (r[0], r[1]))
+    return rects
+
+def grab_screen(monitor=None):
+    """All displays stitched together by default, or just display number `monitor` (1-based, left to right)."""
+    try:
+        from PIL import ImageGrab
+        mons = list_monitors()
+        if monitor:
+            idx = int(monitor) - 1
+            if not 0 <= idx < len(mons):
+                raise ValueError(f"Display {monitor} not found; this PC has {len(mons)} display(s).")
+            return ImageGrab.grab(bbox=mons[idx], all_screens=True)
+        if len(mons) > 1:
+            union = (min(r[0] for r in mons), min(r[1] for r in mons), max(r[2] for r in mons), max(r[3] for r in mons))
+            return ImageGrab.grab(bbox=union, all_screens=True)
+        return ImageGrab.grab(all_screens=True)
+    except ValueError:
+        raise
+    except Exception as e:
+        logging.warning(f"Multi-monitor capture failed, using primary display: {e}")
+        return pyautogui.screenshot()
 
 def score_match(target_clean, target_words, candidate_name):
     cand_clean = re.sub(r'[^a-z0-9]', '', candidate_name.lower())
@@ -1304,10 +1350,24 @@ class MockContext:
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
 
+def _clipboard_api():
+    import ctypes
+    from ctypes import wintypes
+    u, k = ctypes.windll.user32, ctypes.windll.kernel32
+    u.OpenClipboard.argtypes = [wintypes.HWND]; u.OpenClipboard.restype = wintypes.BOOL
+    u.GetClipboardData.argtypes = [wintypes.UINT]; u.GetClipboardData.restype = ctypes.c_void_p
+    u.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]; u.SetClipboardData.restype = ctypes.c_void_p
+    k.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]; k.GlobalAlloc.restype = ctypes.c_void_p
+    k.GlobalLock.argtypes = [ctypes.c_void_p]; k.GlobalLock.restype = ctypes.c_void_p
+    k.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    k.GlobalFree.argtypes = [ctypes.c_void_p]
+    return u, k
+
 def get_clipboard_text():
     if sys.platform == 'win32':
         import ctypes
         try:
+            _clipboard_api()
             if not ctypes.windll.user32.OpenClipboard(None):
                 return "Error: Could not open clipboard"
             try:
@@ -1317,7 +1377,7 @@ def get_clipboard_text():
                 ptr = ctypes.windll.kernel32.GlobalLock(handle)
                 if not ptr:
                     return ""
-                text = ctypes.c_wchar_p(ptr).value
+                text = ctypes.wstring_at(ptr)
                 ctypes.windll.kernel32.GlobalUnlock(handle)
                 return text or ""
             finally:
@@ -1344,6 +1404,7 @@ def set_clipboard_text(text):
     if sys.platform == 'win32':
         import ctypes
         try:
+            _clipboard_api()
             if not ctypes.windll.user32.OpenClipboard(None):
                 return False
             try:
@@ -1710,10 +1771,8 @@ List of available built-in skills:
 2. lock_pc: Lock the Windows computer workstation.
    - (no parameters)
 
-3. unlock_pc: Unlock the Windows computer workstation (simulates pressing keys and entering PIN).
-   - (no parameters)
-
-4. take_screenshot: Take a screenshot of the PC screen and send it.
+4. take_screenshot: Take a screenshot of the PC screen and send it. By default one screenshot is sent per display; pass monitor to capture just one display.
+   - monitor (integer, optional): Display number, 1 = leftmost.
    - (no parameters)
 
 5. search_files: Search for files on the PC. The user will be presented with a list of matching files to download.
@@ -1835,10 +1894,42 @@ def parse_pythonic_tool_call(reply):
         return None
     return {"skill": m.group(1), "parameters": params}
 
+def parse_tag_tool_call(reply):
+    """Handle `<tool_call>take_screenshot`, `<tool_call>name{"a": 1}</tool_call>` and `<tool_call>{"name": ..., "arguments": {...}}`."""
+    m = re.search(r'<tool_call>\s*(.*?)\s*(?:</tool_call>|$)', reply, re.DOTALL)
+    if not m:
+        return None
+    body = m.group(1).strip()
+    if body.startswith("{"):
+        try:
+            d = json.loads(body)
+        except Exception:
+            return None
+        name = d.get("skill") or d.get("name")
+        params = d.get("parameters") or d.get("arguments") or {}
+        return {"skill": name, "parameters": params} if name else None
+    m2 = re.match(r'([A-Za-z_]\w*)\s*(.*)', body, re.DOTALL)
+    if not m2:
+        return None
+    name, rest = m2.group(1), m2.group(2).strip()
+    params = {}
+    if rest.startswith("{"):
+        try:
+            params = json.loads(rest)
+        except Exception:
+            return None
+    elif rest.startswith("("):
+        call = parse_pythonic_tool_call(f"{name}{rest}")
+        params = call["parameters"] if call else {}
+    return {"skill": name, "parameters": params}
+
 def parse_json_response(reply):
     pythonic = parse_pythonic_tool_call(reply)
     if pythonic:
         return pythonic
+    tagged = parse_tag_tool_call(reply)
+    if tagged:
+        return tagged
     clean = reply.strip()
     if clean.startswith("```"):
         match = re.search(r'```(?:json)?\s*(.*?)\s*```', clean, re.DOTALL)
@@ -1851,9 +1942,18 @@ def parse_json_response(reply):
     return json.loads(clean)
 
 async def execute_skill(skill_name, parameters, update, context):
-    """Execute built-in or custom skills."""
+    """Run a skill; any crash becomes an error message the model (and log) can see instead of killing the turn."""
+    if not isinstance(parameters, dict):
+        parameters = {}
+    try:
+        return await _execute_skill(skill_name, parameters, update, context)
+    except Exception as e:
+        logging.exception(f"Skill '{skill_name}' crashed")
+        return {"output": f"Error: skill '{skill_name}' failed: {type(e).__name__}: {e}", "feed_back_to_ai": True}
+
+async def _execute_skill(skill_name, parameters, update, context):
     logging.info(f"Executing skill '{skill_name}' with parameters {parameters}")
-    
+
     # Check custom skills first
     custom_skills = get_custom_skills_metadata()
     custom_skill_names = [cs["name"] for cs in custom_skills]
@@ -1899,8 +1999,7 @@ async def execute_skill(skill_name, parameters, update, context):
                     continue
             if not locked:
                 return {"output": "Error: Could not lock PC. No compatible lock command found.", "feed_back_to_ai": True}
-        import time
-        time.sleep(1.5)
+        await asyncio.sleep(1.5)
         try:
             img_bytes = take_screenshot()
             await context.bot.send_photo(
@@ -1912,35 +2011,18 @@ async def execute_skill(skill_name, parameters, update, context):
             await update.message.reply_text("🔒 PC is locked! (Screenshot protected by OS)")
         return {"output": "PC locked successfully.", "feed_back_to_ai": True}
         
-    elif skill_name == "unlock_pc":
-        await update.message.reply_text("🔓 Sending unlock keystrokes...")
-        import time
-        pyautogui.press('space')
-        time.sleep(1)
-        pyautogui.press('enter')
-        time.sleep(2)
-        pyautogui.write('0603018720')
-        time.sleep(2)
-        try:
-            img_bytes = take_screenshot()
-            await context.bot.send_photo(
-                chat_id=update.effective_chat.id,
-                photo=img_bytes,
-                caption="🖥️ Screen unlocked!"
-            )
-            return {"output": "Screen unlocked successfully.", "feed_back_to_ai": True}
-        except Exception:
-            return {"output": "Unlock keystrokes sent, but could not take a screenshot.", "feed_back_to_ai": True}
-            
     elif skill_name == "take_screenshot":
         await update.message.reply_text("📸 Taking screenshot...")
         try:
-            img_bytes = take_screenshot()
-            await context.bot.send_photo(
-                chat_id=update.effective_chat.id,
-                photo=img_bytes,
-                caption="🖥️ Here's your screen!"
-            )
+            mon = parameters.get("monitor")
+            n = len(list_monitors())
+            targets = [mon] if mon else (list(range(1, n + 1)) if n > 1 else [None])
+            for t in targets:
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id,
+                    photo=take_screenshot(t),
+                    caption=f"🖥️ Display {t} of {n}" if t else "🖥️ Here's your screen!"
+                )
             return {"output": "Screenshot sent successfully.", "feed_back_to_ai": True}
         except Exception as e:
             return {"output": f"Error taking screenshot: {e}", "feed_back_to_ai": True}
@@ -2026,13 +2108,18 @@ async def execute_skill(skill_name, parameters, update, context):
             return {"output": "Error: Missing parameter 'command'.", "feed_back_to_ai": True}
             
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 command,
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
                 text=True,
-                timeout=15
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {})
             )
             combined_output = ""
             if result.stdout:
@@ -2559,6 +2646,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⏳ Claude Code is still working. /claude stop to cancel.")
         return
 
+    quick = QUICK_PHRASES.get(re.sub(r"[^a-z ]", "", user_msg.lower()).strip())
+    if quick:  # simple commands never need the (sometimes unreliable) model
+        await run_quick_skill(quick, update, context)
+        return
+
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id, action="typing"
     )
@@ -2571,8 +2663,9 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     max_iterations = 5
     current_iteration = 0
     restart_pending = False
-    
-    messages_base = [{"role": "system", "content": make_system_prompt()}]
+    format_retried = False
+
+    messages_base =[{"role": "system", "content": make_system_prompt()}]
     
     while current_iteration < max_iterations:
         messages = messages_base + histories[uid][-20:]
@@ -2591,6 +2684,21 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
             
+        if not parsed_data and not format_retried:
+            # Free/router models often ignore the JSON format; ask once more before giving up.
+            format_retried = True
+            messages_base_retry = messages + [
+                {"role": "assistant", "content": reply},
+                {"role": "user", "content": 'Reply again using ONLY the JSON format: {"thought": "...", "reply": "text for the user"} '
+                                            'or {"thought": "...", "skill": "name", "parameters": {...}}. No other text.'}]
+            try:
+                retry = call_nvidia(messages_base_retry)
+                logging.info(f"LLM Retry Reply: {retry}")
+                parsed_data = parse_json_response(retry)
+                reply = retry
+            except Exception:
+                parsed_data = None
+
         if not parsed_data:
             histories[uid].append({"role": "assistant", "content": reply})
             await update.message.reply_text(reply)
@@ -2626,9 +2734,41 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
             
     if restart_pending:
-        import time
-        time.sleep(2)
+        await asyncio.sleep(2)
         restart_bot()
+
+QUICK_PHRASES = {
+    "lock": "lock_pc", "lock pc": "lock_pc", "lock my pc": "lock_pc", "lock the pc": "lock_pc",
+    "lock computer": "lock_pc", "lock my computer": "lock_pc",
+    "screenshot": "take_screenshot", "screenshots": "take_screenshot", "send screenshot": "take_screenshot",
+    "send a screenshot": "take_screenshot", "send screenshots": "take_screenshot", "take a screenshot": "take_screenshot",
+}
+
+async def run_quick_skill(skill, update, context):
+    result = await execute_skill(skill, {}, update, context)
+    out = result.get("output", "")
+    if out.startswith("Error"):
+        await update.message.reply_text(f"⚠️ {out}")
+
+def make_quick_command(skill):
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await is_authorized(update):
+            return
+        await run_quick_skill(skill, update, context)
+    return handler
+
+async def on_error(update, context):
+    from telegram.error import NetworkError
+    err = context.error
+    if isinstance(err, NetworkError):
+        logging.warning(f"Network problem talking to Telegram: {err}")  # retried automatically; no stack-trace spam
+        return
+    logging.error("Unhandled error in handler", exc_info=err)
+    try:
+        if update and getattr(update, "effective_message", None):
+            await update.effective_message.reply_text(f"⚠️ Something went wrong: {type(err).__name__}: {err}")
+    except Exception:
+        pass
 
 # ─── START HANDLER ─────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2638,7 +2778,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Hi! I'm your AI assistant.\n\n"
         "📸 *Send any image* — I'll read it and add events to your calendar!\n\n"
         "💻 *Computer control:*\n"
-        "• 'Lock/Unlock PC'\n"
+        "• 'Lock PC'\n"
         "• 'Open Chrome' / 'Open youtube.com'\n"
         "• 'Take a screenshot'\n"
         "• 'Find resume.pdf'\n\n"
@@ -2863,6 +3003,8 @@ if __name__ == "__main__":
     init_calendar()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("lock", make_quick_command("lock_pc")))
+    app.add_handler(CommandHandler("screenshot", make_quick_command("take_screenshot")))
     app.add_handler(CallbackQueryHandler(file_callback, pattern="^file_"))
     app.add_handler(CallbackQueryHandler(reminder_callback, pattern="^remcal_"))
     app.add_handler(CommandHandler("checkupdate", check_update_command))
@@ -2874,4 +3016,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
     logging.info("✅ Bot running — Vision OCR + Calendar + Computer Control")
+    app.add_error_handler(on_error)
     app.run_polling()

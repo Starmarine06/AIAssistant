@@ -13,7 +13,7 @@ AI Assistant is a Windows-based personal assistant that runs a Telegram bot and 
 - **PC Automation & Control**:
   - Run terminal commands (`cmd.exe`).
   - Open applications, files, or websites.
-  - Lock or unlock your Windows workstation.
+  - Lock your Windows workstation (unlocking from Telegram was removed: Windows blocks apps like this from typing on the lock screen; use a remote-desktop tool such as Chrome Remote Desktop or RustDesk instead).
   - View, copy, or update the clipboard.
 - **Mouse & Keyboard Simulation**:
   - Coordinate percentage-based mouse clicks and keyboard typing/shortcuts.
