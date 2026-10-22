@@ -14,6 +14,8 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 
 import sys
@@ -26,7 +28,7 @@ if getattr(sys, 'frozen', False):
     else:
         CONFIG_DIR = os.path.join(os.path.expanduser("~/.config"), "AIAssistant")
 else:
-    CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+    CONFIG_DIR = os.environ.get("AIASSISTANT_CONFIG_DIR") or os.path.dirname(os.path.abspath(__file__))
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
 import llm_providers
@@ -443,7 +445,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
+        RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=2, encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -570,12 +572,25 @@ def init_calendar():
             
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-            except Exception as e:
-                logging.error(f"Error refreshing credentials: {e}")
-                creds = None
-                
+            for attempt in range(3):
+                try:
+                    creds.refresh(Request())
+                    with open(token_path, "w") as f:
+                        f.write(creds.to_json())
+                    break
+                except RefreshError as e:
+                    # Token revoked or expired for good: only now is re-authorization needed
+                    logging.error(f"Error refreshing credentials: {e}")
+                    creds = None
+                    break
+                except Exception as e:
+                    # Network/SSL hiccup: retry, then run without Calendar instead of blocking on a browser prompt
+                    logging.warning(f"Transient error refreshing credentials (attempt {attempt + 1}/3): {e}")
+                    if attempt == 2:
+                        logging.warning("Google Calendar unavailable until restart.")
+                        return
+                    time.sleep(5)
+
         if not creds or not creds.valid:
             logging.info("🔐 Opening browser for Google services authorization...")
             try:
@@ -608,6 +623,8 @@ def create_calendar_event(title, date_str, time_str=None, description=""):
             "start": {"date": date_str},
             "end":   {"date": date_str},
         }
+    if calendar_service is None:
+        raise RuntimeError("Google Calendar is not connected. Restart the bot once your internet is stable.")
     result = calendar_service.events().insert(calendarId="primary", body=event).execute()
     return result.get("htmlLink")
 
@@ -2632,9 +2649,10 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── CHAT HANDLER ──────────────────────────────────────
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global restart_pending
+    if not update.message or not update.message.text:
+        return  # edited messages and other non-message updates have no .message
     if update.effective_user:
-        msg_text = update.message.text if update.message else ""
-        logging.info(f"📩 Received telegram message from {update.effective_user.id}: '{msg_text}'")
+        logging.info(f"📩 Received telegram message from {update.effective_user.id}: '{update.message.text}'")
     if not await is_authorized(update):
         logging.warning(f"🚫 Unauthorized attempt by user {update.effective_user.id if update.effective_user else 'unknown'}")
         return
@@ -2947,18 +2965,33 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Failed to download: {e}")
 
 # ─── MAIN ──────────────────────────────────────────────
-def wait_for_internet():
-    import socket
+INTERNET_CHECK_URLS = ("https://oauth2.googleapis.com/", "https://api.telegram.org/")
+
+def internet_works():
+    """True only if a full HTTPS handshake (DNS, TCP, verified TLS) succeeds to every service the bot needs.
+    Any HTTP status counts; a captive portal or half-up Wi-Fi fails at DNS/TLS."""
+    for url in INTERNET_CHECK_URLS:
+        try:
+            requests.get(url, timeout=5)
+        except Exception:
+            return False
+    return True
+
+def wait_for_internet(stable_checks=2):
     logging.info("Checking internet connection...")
     logged_waiting = False
+    ok_in_a_row = 0
     while True:
-        try:
-            with socket.create_connection(("oauth2.googleapis.com", 443), timeout=3):
-                logging.info("Internet connection detected. Continuing bot startup...")
+        if internet_works():
+            ok_in_a_row += 1
+            if ok_in_a_row >= stable_checks:
+                logging.info("Internet connection verified. Continuing bot startup...")
                 return
-        except Exception:
+            time.sleep(3)
+        else:
+            ok_in_a_row = 0
             if not logged_waiting:
-                logging.info("Offline. Waiting for internet connection to restore...")
+                logging.info("Offline or not fully connected. Waiting for working internet...")
                 logged_waiting = True
             time.sleep(5)
 
